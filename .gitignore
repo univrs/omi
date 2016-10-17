@@ -1,5 +1,6 @@
 # git ignore file for omi project
 
+/tmp
 /Unix/GNUmakefile
 /Unix/output
 /Unix/output1

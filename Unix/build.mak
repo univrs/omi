@@ -9,7 +9,7 @@ $(error OUTPUTDIR is undefined)
 endif
 
 ifndef DISTBASE
-    DISTBASE=$(`pwd`/../tmp)
+    DISTBASE=$(`pwd`/..)
 endif
 
 include $(OUTPUTDIR)/config.mak
