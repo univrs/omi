@@ -230,7 +230,12 @@ void Module::Unload()
 {
     if(m_library)
     {
+#if !defined(aix) && !defined(hpux)
+        // dlclose is causing trouble on hpux and aix. It appears the close is occuring before other
+        // threads are done
+
         Shlib_Close(m_library);
+#endif
         m_library = NULL;
     }
 }
