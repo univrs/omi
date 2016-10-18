@@ -208,7 +208,7 @@ cd omi-$version
 ## Create the prefix directory:
 ##
 
-prefix=/tmp/OMI932E75578CAB46E4A3EB87787B9EA40F
+prefix=$root/../tmp/OMI932E75578CAB46E4A3EB87787B9EA40F
 rm -rf $prefix
 
 if [ -d "$prefix" ]; then
@@ -243,7 +243,7 @@ fi
 ## check:
 ##
 
-make check
+make check 
 
 if [ "$?" != "0" ]; then
     echo "$0: check failed"
@@ -266,7 +266,7 @@ fi
 ## Generate C++ provider:
 ##
 
-mkdir $prefix/ocsprovider
+mkdir $prefix/ocsprovider DISTBASE=$root/..
 
 if [ "$?" != "0" ]; then
     echo "$0: failed to create $prefix/oscprovider directory"

@@ -8,13 +8,11 @@ ifndef OUTPUTDIR
 $(error OUTPUTDIR is undefined)
 endif
 
-ifndef DISTBASE
-    DISTBASE=$(`pwd`/..)
-endif
 
 include $(OUTPUTDIR)/config.mak
 
 TOP=.
+DISTBASE := $(shell pwd)/..
 
 ##==============================================================================
 ##
@@ -344,6 +342,7 @@ endif
 ##
 ##==============================================================================
 
+DISTBASE := $(shell pwd)/..
 DISTTMPDIR=$(DISTBASE)/tmp/omi/$(USER)
 DIST=omi-$(CONFIG_VERSION)
 
@@ -391,6 +390,7 @@ dist.zip: distcommon
 ##
 ##==============================================================================
 
+DISTBASE := $(shell pwd)/..
 CHECKDIR=$(DISTBASE)/tmp/omicheck.$(shell ./buildtool username)
 
 check:
