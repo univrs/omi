@@ -418,6 +418,8 @@ MI_Boolean Http_DecryptData(_In_ Http_SR_SocketData * handler, _Out_ HttpHeaders
             segp = ++scanp;
         }
 
+free(malloc(32));
+
         if (Strncasecmp(segp, ENCRYPTED_SEGMENT, ENCRYPTED_SEGMENT_LEN) == 0)
         {
             // Skip the boundary
@@ -547,21 +549,25 @@ MI_Boolean Http_DecryptData(_In_ Http_SR_SocketData * handler, _Out_ HttpHeaders
                         scanp++;
                     scanp++;
                 }
+free(malloc(32));
             }
 
         }
         ++scanp;
     }
 
+fprintf(stderr, "input_buffer.length = %ld, input_buffer.value[length-1] = %c", input_buffer.length, ((char*)input_buffer.value)[input_buffer.length-1]);
     if (!done)
     {
         return FALSE;
     }
     // Alloc the new data page based on the original content size
 
+free(malloc(32));
     maj_stat = (*_g_gssState.Gss_Unwrap)(&min_stat, (gss_ctx_id_t) handler->pAuthContext, &input_buffer, &output_buffer, &flags, NULL);
     if (GSS_S_COMPLETE != maj_stat)
     {
+free(malloc(32));
         _report_error(maj_stat, min_stat, "gss_unwrap");
         return FALSE;
     }
@@ -747,7 +753,7 @@ MI_Boolean Http_EncryptData(_In_ Http_SR_SocketData * handler, _Out_ char **pHea
     *pHeaderLen = pdst - pNewHeader;
     *pHeader = pNewHeader;
 
-    Page *pNewData = PAL_Malloc(needed_data_size+sizeof(Page));
+    Page *pNewData = PAL_Malloc(needed_data_size+sizeof(Page)+256);
     if (!pNewData)
     {
         (*_g_gssState.Gss_Release_Buffer)(&min_stat, &output_buffer);
@@ -1484,6 +1490,8 @@ MI_Boolean IsClientAuthorized(_In_ Http_SR_SocketData * handler)
 
         handler->pAuthContext = context_hdl;
 
+fprintf(stderr, "in auth: flags = %x\n", flags);
+
         PAL_Free(input_token.value);
 
         if (maj_stat == GSS_S_COMPLETE)
@@ -1537,6 +1545,24 @@ MI_Boolean IsClientAuthorized(_In_ Http_SR_SocketData * handler)
 
                 goto Done;
             }
+
+            if (output_token.length != 0 && headers->contentLength == 0 )
+            {
+                handler->httpErrorCode = HTTP_ERROR_CODE_OK;
+                auth_response = _BuildAuthResponse(protocol_p, handler->httpErrorCode, &output_token, &response_len);
+                if (auth_response == NULL)
+                {
+
+                    // Problem : 2do complain into trace file
+                    handler->httpErrorCode = HTTP_ERROR_CODE_INTERNAL_SERVER_ERROR;
+                }
+                (*_g_gssState.Gss_Release_Buffer)(&min_stat, &output_token);
+
+                _SendAuthResponse(handler, auth_response, response_len);
+                PAL_Free(auth_response);
+            }
+
+            // If there is no content, its up to us to send the mutual auth reply
 
             (* _g_gssState.Gss_Release_Buffer)(&min_stat, user_name);
             handler->negFlags = flags;

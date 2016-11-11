@@ -651,6 +651,15 @@ static Http_CallbackResult _ReadData(
         }
     }
 
+    if (handler->recvHeaders.contentLength == 0)
+    {
+        handler->recvPage = 0;
+        handler->receivedSize = 0;
+        memset(&handler->recvHeaders, 0, sizeof(handler->recvHeaders));
+        handler->recvingState = RECV_STATE_HEADER;
+        return PRT_RETURN_TRUE;
+    }
+            
 
     if (!handler->ssl)
     {
@@ -864,7 +873,10 @@ static Http_CallbackResult _WriteHeader(
                 char before_encrypt[] = "\n------------ Before Encryption ---------------\n";
                 char before_encrypt_end[] = "\n------------ End Before ---------------\n";
                 _WriteTraceFile(ID_HTTPSENDTRACEFILE, &before_encrypt, sizeof(before_encrypt));
-                _WriteTraceFile(ID_HTTPSENDTRACEFILE, (char *)(pOldPage+1), pOldPage->u.s.size);
+                if (pOldPage)
+                {    
+                    _WriteTraceFile(ID_HTTPSENDTRACEFILE, (char *)(pOldPage+1), pOldPage->u.s.size);
+                }
                 _WriteTraceFile(ID_HTTPSENDTRACEFILE, &before_encrypt_end, sizeof(before_encrypt_end));
             }
 

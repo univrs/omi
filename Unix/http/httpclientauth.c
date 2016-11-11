@@ -33,6 +33,7 @@
 
 // #define ENABLE_TRACING 1
 #define FORCE_TRACING  1
+#define ENCRYPT_DECRYPT  1
 
 #ifdef CONFIG_POSIX
 #include <openssl/ssl.h>
@@ -436,6 +437,684 @@ static int EncodePlaceCallback(const char *data, size_t size, void *callbackData
 
 #if AUTHORIZATION
 
+static void _ReportError(HttpClient_SR_SocketData * self, const char *msg,
+                         OM_uint32 major_status, OM_uint32 minor_status);
+
+/*
+**==============================================================================
+*/
+
+
+static MI_Boolean _WriteAuthRequest(HttpClient_SR_SocketData * handler, const char *pRequest, int requestLen)
+
+{
+    size_t sent, total_sent;
+    total_sent = 0;
+
+    if (!pRequest)
+    {
+        return FALSE;
+    }
+
+    if (!handler->ssl)
+    {
+        MI_Result rslt;
+
+        do
+        {
+            rslt = Sock_Write(handler->base.sock, pRequest, requestLen, &sent);
+        }
+        while (rslt == MI_RESULT_WOULD_BLOCK);
+
+        if (FORCE_TRACING || ((total_sent > 0) && handler->enableTracing))
+        {
+            _WriteTraceFile(ID_HTTPCLIENTSENDTRACEFILE, pRequest, sent);
+        }
+        return rslt == MI_RESULT_OK;
+    }
+
+    do
+    {
+        sent = 0;
+        sent = SSL_write(handler->ssl, pRequest, requestLen);
+
+        if (sent == 0)
+        {
+            trace_Socket_ConnectionClosed(handler);
+            return FALSE;
+
+        }
+        else if ((int)sent < 0)
+        {
+            switch (SSL_get_error(handler->ssl, sent))
+            {
+
+                // These do not happen. We havfe already drained the socket
+                // before we got here. 
+
+            case SSL_ERROR_WANT_WRITE:
+                trace_SSLWrite_UnexpectedSysError(SSL_ERROR_WANT_WRITE);
+                return FALSE;
+
+            case SSL_ERROR_WANT_READ:
+                trace_SSLWrite_UnexpectedSysError(SSL_ERROR_WANT_READ);
+                return FALSE;
+
+                // This would happen routinely
+            case SSL_ERROR_SYSCALL:
+                if (EAGAIN == errno || EWOULDBLOCK == errno || EINPROGRESS == errno)
+                    // If e_would_block we just retry in the loop.
+
+                    break;
+
+                trace_SSLWrite_UnexpectedSysError(errno);
+                return FALSE;
+
+            default:
+                break;
+            }
+        }
+
+        total_sent += sent;
+
+    }
+    while (total_sent < requestLen);
+
+    if (FORCE_TRACING || ((total_sent > 0) && handler->enableTracing))
+    {
+        _WriteTraceFile(ID_HTTPCLIENTSENDTRACEFILE, pRequest, total_sent);
+    }
+
+    return TRUE;
+}
+
+#if 0
+
+
+void SendAuthRequest(HttpClient_SR_SocketData * handler, gss_buffer_t pToken)
+
+{
+    const char *auth_header = NULL;
+    MI_Uint32 status = 0;
+    MI_Uint32 header_len   = 0;
+    static const char AUTHORISATION_REQUEST[] = "POST /wsman/ HTTP/1.1\r\n"\
+                                                "Connection: Keep-Alive\r\n"\
+                                                "Content-Length: 0\r\n"\
+                                                "Host: host\r\n"\
+                                                "Content-Type: application/soap+xml;charset=UTF-8^\r\n";
+
+    static const size_t AUTHORISATION_REQUEST_LEN = MI_COUNT(AUTHORISATION_REQUEST);
+
+    DEBUG_ASSERT(sendSock);
+
+    /* validate handler */
+
+    handler->base.mask |= SELECTOR_WRITE;
+    handler->base.mask &= ~SELECTOR_READ;
+
+    handler->sentSize = 0;
+    handler->sendingState = RECV_STATE_HEADER;
+    
+
+    if (!pToken)
+    {
+        /* First time  */
+        auth_header = _BuildInitialGssAuthHeader(handler, &status);
+    }
+    else {
+        auth_header = _BuildClientGssAuthHeader(handler, &output_token, &header_len);
+    }    
+    
+    prequest = PAL_Malloc(
+    if (!_WriteAuthRequest(handler, pRequest, requestLen))
+    {
+        trace_SendIN_IO_thread_HttpSocket_WriteFailed();
+    }
+
+    // Force it into read state so we can get the next header
+    handler->base.mask &= ~SELECTOR_WRITE;
+    handler->base.mask |= SELECTOR_READ;
+    handler->recvingState = RECV_STATE_HEADER;
+
+}
+
+#endif
+
+#if ENCRYPT_DECRYPT
+
+/*
+ * Decrypts encrypted data in the data packet. Returns new header (with original content type and content length)
+ * and the new data. releases the page. 
+ * Returns true if it performed a change, false otherwise
+ */
+
+MI_Boolean HttpClient_DecryptData(_In_ HttpClient_SR_SocketData * handler, _Out_ HttpClientResponseHeader * pHeaders, _Out_ Page ** pData)
+{
+    OM_uint32 maj_stat = 0;
+    OM_uint32 min_stat = 0;
+    gss_buffer_desc input_buffer = { 0 };
+    gss_buffer_desc output_buffer = { 0 };
+    Page *page = NULL;
+    char *scanlimit = NULL;
+    char *scanp = NULL;
+    char *segp = NULL;
+    char *linep = NULL;
+    char *linelimit = NULL;
+    int flags = (int)handler->negoFlags;
+    uint32_t sig_len = 0;
+    //uint32_t sig_flags = 0;
+
+    int original_content_length = 0;
+    char original_content_type_save[1024] = { 0 };  // Longest possible content type?
+    char original_encoding_save[64] = { 0 };
+
+    char *original_content_type = NULL;
+    char *original_encoding = NULL;
+
+    MI_Boolean done = FALSE;
+    static const char ENCRYPTED_SEGMENT[] = "Encrypted Boundary";
+    static const size_t ENCRYPTED_SEGMENT_LEN = MI_COUNT(ENCRYPTED_SEGMENT) - 1;
+
+    static const char ORIGINAL_CONTENT[] = "OriginalContent:";
+    static const size_t ORIGINAL_CONTENT_LEN = MI_COUNT(ORIGINAL_CONTENT) - 1;
+
+    static const char TYPE_FIELD[] = "type=";
+    static const size_t TYPE_FIELD_LEN = MI_COUNT(TYPE_FIELD) - 1;
+
+    static const char CHARSET_FIELD[] = "charset=";
+    static const size_t CHARSET_FIELD_LEN = MI_COUNT(CHARSET_FIELD) - 1;
+
+    static const char LENGTH_FIELD[] = "length=";
+    static const size_t LENGTH_FIELD_LEN = MI_COUNT(LENGTH_FIELD) - 1;
+
+    static const char CONTENT_TYPE[] = "Content-Type";
+    static const size_t CONTENT_TYPE_LEN = MI_COUNT(CONTENT_TYPE) - 1;
+
+    static const char CONTENT_LENGTH[] = "Content-Length";
+    static const size_t CONTENT_LENGTH_LEN = MI_COUNT(CONTENT_LENGTH) - 1;
+
+    static const char OCTET_STREAM[] = "application/octet-stream";
+    static const size_t OCTET_STREAM_LEN = MI_COUNT(OCTET_STREAM) - 1;
+
+    static const char APPLICATION_SPNEGO[] = "application/HTTP-SPNEGO-session-encrypted";   // 2do: compare to header protocol
+    static const size_t APPLICATION_SPNEGO_LEN = MI_COUNT(APPLICATION_SPNEGO) - 1;
+
+    static const char MULTIPART_ENCRYPTED[] = "multipart/encrypted";
+    static const size_t MULTIPART_ENCRYPTED_LEN = MI_COUNT(MULTIPART_ENCRYPTED) - 1;
+
+    const char *content_type = NULL;
+    const char *content_len_str = NULL;
+    //char *char_set = NULL;
+
+    if (!pHeaders)
+    {
+        trace_HTTP_CryptInvalidArg(__FUNCTION__, "pHeaders == NULL");
+        return FALSE;
+    }
+
+    int i = 0;
+    for (i = 0; i < pHeaders->sizeHeaders; i++ )
+    {
+        if (strncasecmp(pHeaders->headers[i].name, CONTENT_TYPE, CONTENT_TYPE_LEN) == 0)
+        {
+            content_type = pHeaders->headers[i].value;
+        }
+        else if (strncasecmp(pHeaders->headers[i].name, CONTENT_LENGTH, CONTENT_LENGTH_LEN) == 0)
+        {
+            content_len_str = pHeaders->headers[i].value;
+        }
+    }
+
+    if (!(strncasecmp(content_type, MULTIPART_ENCRYPTED, MULTIPART_ENCRYPTED_LEN) == 0))
+    {
+        // Then its not encrypted. our job is done
+
+        return TRUE;
+    }
+
+    if (!handler->authContext)
+    {
+        trace_HTTP_CryptInvalidArg(__FUNCTION__, "context == NULL");
+        return FALSE;
+    }
+
+    if (!pData)
+    {
+        trace_HTTP_CryptInvalidArg(__FUNCTION__, "pdata == NULL");
+        return FALSE;
+    }
+
+    page = *pData;
+    input_buffer.length = page->u.s.size;
+    input_buffer.value = (void *)(page + 1);
+
+    // Check the data for the original size and content type, and the start of the encrypted data
+
+    scanp = (char *)(page + 1) + 1;
+    scanlimit = ((char *)page) + page->u.s.size;
+    segp = scanp;
+    linep = scanp;
+    while (scanp < scanlimit && !done)
+    {
+        if ('-' == scanp[0] && '-' == scanp[-1])
+        {
+            // Start of a segment. But which one?
+            segp = ++scanp;
+        }
+
+        if (Strncasecmp(segp, ENCRYPTED_SEGMENT, ENCRYPTED_SEGMENT_LEN) == 0)
+        {
+            // Skip the boundary
+            while (!('\n' == scanp[0] && '\r' == scanp[-1]) && scanp < scanlimit) scanp++;
+            scanp++;            // ski[p the final \n
+
+            // Which line
+            while (!('\n' == scanp[0] && '\r' == scanp[-1]) && scanp < scanlimit && !done)
+            {
+                // Skip to the end of the line
+
+                linep = scanp;
+
+                if (Strncasecmp(linep, CONTENT_TYPE, CONTENT_TYPE_LEN) == 0)
+                {
+                    // Content-Type: application/HTTP-SPNEGO-session-encrypted | Content-Type: application/octet-stream
+
+                    // Scan to the end of the line
+                    while (!('\n' == scanp[0] && '\r' == scanp[-1]) && scanp < scanlimit && !done)
+                        scanp++;
+
+                    linelimit = scanp - 1;
+
+                    linep += CONTENT_TYPE_LEN;
+                    while (isspace(*linep) && linep < linelimit)
+                        linep++;
+
+                    if (':' == *linep && linep < linelimit)
+                        linep++;
+
+                    while (isspace(*linep) && linep < linelimit)
+                        linep++;
+
+                    if (Strncasecmp(linep, OCTET_STREAM, OCTET_STREAM_LEN) == 0)
+                    {
+
+                        // The encrypted data is sent as a 4 byte signature length, 16 byte signature,
+                        // 4 byte message length, then message. gss_unwrap doesn't like that so we need to 
+                        // verify the sig ourselves
+
+                        sig_len = *(uint32_t *) (linelimit + 2);
+                        sig_len = ByteSwapToWindows32(sig_len);
+
+                        //  sig_flags = *(uint32_t*)(linelimit+2+4);
+
+                        input_buffer.length = original_content_length+sig_len;
+                        input_buffer.value = linelimit + 2  // skip crlf
+                                                       + 4; // skip signature len
+
+                        done = TRUE;
+                        break;
+                    }
+                    else if (Strncasecmp(linep, APPLICATION_SPNEGO, APPLICATION_SPNEGO_LEN) == 0)
+                    {
+                        // Should be application/HTTP-SPNEGO-session-encrypted
+
+                    }
+                    else
+                    {
+                        // Bogus.
+                    }
+                    scanp = linelimit + 2;
+                }
+                else if (Strncasecmp(linep, ORIGINAL_CONTENT, ORIGINAL_CONTENT_LEN) == 0)
+                {
+                    while (!('\n' == scanp[0] && '\r' == scanp[-1]) && scanp < scanlimit && !done)
+                        scanp++;
+
+                    linelimit = scanp - 1;
+
+                    linep += ORIGINAL_CONTENT_LEN;
+                    do
+                    {
+
+                        while ((isspace(*linep) || ';' == *linep) && linep < linelimit)
+                            linep++;
+                        if (Strncasecmp(linep, LENGTH_FIELD, LENGTH_FIELD_LEN) == 0)
+                        {
+                            linep += LENGTH_FIELD_LEN;
+                            original_content_length = atoi(linep);
+                            while (';' != *linep && *linep && linep < linelimit)
+                                linep++;
+                            linep++;
+                        }
+                        else if (Strncasecmp(linep, TYPE_FIELD, TYPE_FIELD_LEN) == 0)
+                        {
+                            linep += TYPE_FIELD_LEN;
+                            original_content_type = linep;
+                            while (';' != *linep && *linep && linep < linelimit)
+                                linep++;
+                            *linep++ = '\0';
+                            memcpy(original_content_type_save, original_content_type, linep - original_content_type);
+                            original_content_type = original_content_type_save;
+                        }
+                        else if (Strncasecmp(linep, CHARSET_FIELD, CHARSET_FIELD_LEN) == 0)
+                        {
+                            linep += CHARSET_FIELD_LEN;
+                            original_encoding = linep;
+                            while (';' != *linep && linep < linelimit)
+                                linep++;
+                            *linep++ = '\0';
+                            memcpy(original_encoding_save, original_encoding, linep - original_encoding);
+                            original_encoding = original_encoding_save;
+                        }
+
+                    }
+                    while (linep < linelimit);
+                    scanp = linelimit + 2;
+                }
+                else if (*scanp == '-' && scanp[1] == '-')
+                {    
+
+                    // Start of new segment
+
+                    break;
+                }    
+                else
+                {
+                    // Bogus
+
+                    while (!('\n' == scanp[0] && '\r' == scanp[-1]) && *scanp != '-' && scanp < scanlimit && !done)
+                        scanp++;
+                    scanp++;
+                }
+            }
+
+        }
+        ++scanp;
+    }
+
+    if (!done)
+    {
+        return FALSE;
+    }
+    // Alloc the new data page based on the original content size
+
+    maj_stat = (*_g_gssClientState.Gss_Unwrap)(&min_stat, (gss_ctx_id_t) handler->authContext, &input_buffer, &output_buffer, &flags, NULL);
+    if (GSS_S_COMPLETE != maj_stat)
+    {
+        _ReportError(handler, "gss_unwrap", maj_stat, min_stat);
+        return FALSE;
+    }
+    // Here is where we replace the pData page, replace the headers on content-type and content size
+
+    // We can just copy the data into the buffer directly, since the decrypted data is guaranteed
+    // to be smaller than the encrypted data plus header
+
+    page->u.s.size = output_buffer.length;
+    memcpy(page + 1, output_buffer.value, output_buffer.length);
+
+    char *buffer_p = (char *)(page + 1) + output_buffer.length;
+
+    // We know we have the additional room in the page because the string was in the page already
+    memcpy(buffer_p, original_content_type, strlen(original_content_type) + 1);
+    original_content_type = buffer_p;
+
+    buffer_p += strlen(original_content_type) + 1;  // Include the null
+    memcpy(buffer_p, original_encoding, strlen(original_encoding) + 1);
+
+    (*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &output_buffer);
+
+#if 0
+    pHeaders->charset = original_encoding;
+#endif    
+
+    // In oroder for this to work, we must leave the original page allocated, and leave it to the 
+    // caller to free the original data and recvBuffer
+
+    for (i = 0; i < pHeaders->sizeHeaders; i++ )
+    {
+        char **pvalue = NULL;
+
+        pvalue = (char**)(&pHeaders->headers[i].value);
+        if (strncasecmp(pHeaders->headers[i].name, CONTENT_TYPE, CONTENT_TYPE_LEN) == 0)
+        {
+            *pvalue = (char*)original_content_type;
+        }
+        else if (strncasecmp(pHeaders->headers[i].name, CONTENT_LENGTH, CONTENT_LENGTH_LEN) == 0)
+        {
+            *pvalue = (char*)content_len_str;
+        }
+    }
+
+    return MI_TRUE;
+}
+
+/*
+ * Encrypts data in the data packet. Returns new header (with original content type and content length)
+ * and the new data. releases the page. 
+ */
+
+MI_Boolean
+HttpClient_EncryptData(_In_ HttpClient_SR_SocketData * handler, _Out_ Page **pHeader, _Out_ Page ** pData)
+
+{
+    char numbuf[11] = { 0 };
+    const char *pnum = NULL;
+    size_t str_len = 0;
+
+    static const char MULTIPART_ENCRYPTED[] = "multipart/encrypted;"
+        "protocol=\"application/HTTP-SPNEGO-session-encrypted\";" "boundary=\"Encrypted Boundary\"\r\n\r\n";
+
+    static const char ENCRYPTED_BOUNDARY[] = "--Encrypted Boundary\r\n";
+    static const size_t ENCRYPTED_BOUNDARY_LEN = MI_COUNT(ENCRYPTED_BOUNDARY) - 1;  // do not count the null
+
+    static const char ENCRYPTED_BODY_CONTENT_TYPE[] = "Content-Type: application/HTTP-SPNEGO-session-encrypted\r\n";
+    static const size_t ENCRYPTED_BODY_CONTENT_TYPE_LEN = MI_COUNT(ENCRYPTED_BODY_CONTENT_TYPE) - 1;
+
+    static const char ORIGINAL_CONTENT[] = "OriginalContent: type=";
+    static const size_t ORIGINAL_CONTENT_LEN = MI_COUNT(ORIGINAL_CONTENT) - 1;
+
+    static const char ORIGINAL_CHARSET[] = ";charset=";
+    static const size_t ORIGINAL_CHARSET_LEN = MI_COUNT(ORIGINAL_CHARSET) - 1;
+
+    static const char ORIGINAL_LENGTH[] = ";Length=";   // Plus crlf
+    static const size_t ORIGINAL_LENGTH_LEN = MI_COUNT(ORIGINAL_LENGTH) - 1;
+
+    static const char ENCRYPTED_OCTET_CONTENT_TYPE[] = "Content-Type: application/octet-stream\r\n";
+    static const size_t ENCRYPTED_OCTET_CONTENT_TYPE_LEN = MI_COUNT(ENCRYPTED_OCTET_CONTENT_TYPE) - 1;
+
+    static const char TRAILER_BOUNDARY[] = "--Encrypted Boundary--\r\n";
+    static const size_t TRAILER_BOUNDARY_LEN = MI_COUNT(TRAILER_BOUNDARY) - 1;
+
+    int needed_data_size = 0;
+
+    // We encrypted every byte that was there. Success
+
+    if (!pData)
+    {
+        return MI_TRUE;
+    }
+
+    if (!*pData)
+    {
+        return MI_TRUE;
+    }
+
+    if (!handler->private)
+    {
+
+        // We are not encrypting, so we are done;
+
+        return MI_TRUE;
+    }
+
+    char *original_content_type = NULL;
+    char *original_encoding = NULL;
+    int original_content_len = (*pData)->u.s.size;
+    char *poriginal_data = (char *)(*pData + 1);
+
+    gss_buffer_desc input_buffer = { original_content_len, poriginal_data };
+    gss_buffer_desc output_buffer = { 0 };
+    OM_uint32 min_stat, maj_stat;
+    int out_flags;
+
+    maj_stat = (*_g_gssClientState.Gss_Wrap)(&min_stat, handler->authContext, (handler->negoFlags & (GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG)) | GSS_C_REPLAY_FLAG,
+                        GSS_C_QOP_DEFAULT, &input_buffer, &out_flags, &output_buffer);
+
+    if (maj_stat != GSS_S_COMPLETE)
+    {
+        _ReportError(handler, "gss_wrap failed", maj_stat, min_stat);
+        (*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &output_buffer);
+        return MI_FALSE;
+    }
+
+    gss_buffer_desc token = { 0 };
+
+    // We need to get the proper length from the token, but for now 16 bytes is correct for all 
+    // protocols
+    token.length = 16;
+
+    // clone the header
+
+    int orig_hdr_len = strlen((char*)(*pHeader+1));
+
+    // Could be less mem, but not by much and this doesnt require two passes
+    Page *pNewHeaderPage = PAL_Malloc(strlen(MULTIPART_ENCRYPTED) + orig_hdr_len + 100 + sizeof(Page));
+    pNewHeaderPage->u.s.size = (strlen(MULTIPART_ENCRYPTED) + orig_hdr_len + 100);
+
+    char *pNewHeader = (char *)(pNewHeaderPage+1);
+
+    // char *pdstlimit = pNewHeader+strlen(MULTIPART_ENCRYPTED)+orig_hdr_len;
+
+    char *phdr = Strcasestr((char*)(*pHeader+1), "Content-Type:");
+    phdr = strchr(phdr, ':');
+    phdr++;
+
+    while (isspace(*phdr))
+        phdr++;
+    original_content_type = phdr;
+    phdr = strchr(phdr, ';');
+    *phdr++ = '\0';
+
+    phdr = Strcasestr(phdr, "charset=");
+    phdr = strchr(phdr, '=');
+    phdr++;
+
+    original_encoding = phdr;
+    phdr = strchr(phdr, '\r');
+    *phdr++ = '\0';
+
+    pnum = Uint32ToStr(numbuf, original_content_len, &str_len);
+
+    // Figure out the data size
+    needed_data_size = ENCRYPTED_BOUNDARY_LEN +
+                       ENCRYPTED_BODY_CONTENT_TYPE_LEN +
+                       strlen(ORIGINAL_CONTENT) +
+                       strlen(ORIGINAL_CHARSET) +
+                       strlen(ORIGINAL_LENGTH) +
+                       str_len +
+                       strlen(original_encoding) +
+                       strlen(original_content_type) +
+                       2 +  // 2 for \r\n
+                       strlen(ENCRYPTED_BOUNDARY) +
+                       strlen(ENCRYPTED_OCTET_CONTENT_TYPE) +
+                       4 + // dword signaturelength
+                       output_buffer.length + // Length includes the signature
+                       strlen(TRAILER_BOUNDARY);
+
+    // Copy the first part of the original header
+
+    char *psrc = (char*)(*pHeader+1);
+    char *pdst = pNewHeader;
+
+    // First replace the original content length
+
+    phdr = Strcasestr((char*)(*pHeader+1), "Content-Length:");
+    phdr = strchr(phdr, ':');
+    phdr++;
+    for (; psrc < phdr; psrc++, pdst++)
+        *pdst = *psrc;
+    pnum = Uint32ToStr(numbuf, needed_data_size, &str_len);
+    memcpy(pdst, pnum, str_len);
+    pdst += str_len;
+
+    psrc = strchr(phdr, '\r');
+    for (; psrc < original_content_type; psrc++, pdst++)
+    {
+         *pdst = *psrc;
+    }
+    memcpy(pdst, MULTIPART_ENCRYPTED, strlen(MULTIPART_ENCRYPTED));
+    pdst += strlen(MULTIPART_ENCRYPTED);
+
+//    PAL_Free(*pHeader); We hav no way of knowing how the pHeader got there
+    pNewHeaderPage->u.s.size = pdst - pNewHeader;
+    *pHeader = pNewHeaderPage;
+
+    Page *pNewData = PAL_Malloc(needed_data_size+sizeof(Page));
+    if (!pNewData)
+    {
+        (*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &output_buffer);
+        trace_HTTP_AuthMallocFailed("pNewData in Http_EcryptData");
+        return MI_FALSE;
+    }
+
+    pNewData->u.s.size = needed_data_size;
+    pNewData->u.s.next = 0;
+    char *buffp = (char *)(pNewData + 1);
+
+    memcpy(buffp, ENCRYPTED_BOUNDARY, ENCRYPTED_BOUNDARY_LEN);
+    buffp += ENCRYPTED_BOUNDARY_LEN;
+
+    memcpy(buffp, ENCRYPTED_BODY_CONTENT_TYPE, ENCRYPTED_BODY_CONTENT_TYPE_LEN);
+    buffp += ENCRYPTED_BODY_CONTENT_TYPE_LEN;
+
+    memcpy(buffp, ORIGINAL_CONTENT, ORIGINAL_CONTENT_LEN);
+    buffp += ORIGINAL_CONTENT_LEN;
+
+    memcpy(buffp, original_content_type, strlen(original_content_type));
+    buffp += strlen(original_content_type);
+
+    memcpy(buffp, ORIGINAL_CHARSET, ORIGINAL_CHARSET_LEN);
+    buffp += ORIGINAL_CHARSET_LEN;
+
+    memcpy(buffp, original_encoding, strlen(original_encoding));
+    buffp += strlen(original_encoding);
+
+    memcpy(buffp, ORIGINAL_LENGTH, ORIGINAL_LENGTH_LEN);
+    buffp += ORIGINAL_LENGTH_LEN;
+
+    pnum = Uint32ToStr(numbuf, original_content_len, &str_len);
+    memcpy(buffp, pnum, str_len);
+    buffp += str_len;
+
+    memcpy(buffp, "\r\n", 2);
+    buffp += 2;
+
+    memcpy(buffp, ENCRYPTED_BOUNDARY, ENCRYPTED_BOUNDARY_LEN);
+    buffp += ENCRYPTED_BOUNDARY_LEN;
+
+    memcpy(buffp, ENCRYPTED_OCTET_CONTENT_TYPE, ENCRYPTED_OCTET_CONTENT_TYPE_LEN);
+    buffp += ENCRYPTED_OCTET_CONTENT_TYPE_LEN;
+
+    int siglen = ByteSwapToWindows32(token.length);
+
+    memcpy(buffp, &siglen, 4);
+    buffp += 4;
+
+    memcpy(buffp, output_buffer.value, output_buffer.length);
+    buffp += output_buffer.length;
+
+    memcpy(buffp, TRAILER_BOUNDARY, TRAILER_BOUNDARY_LEN);
+    buffp += TRAILER_BOUNDARY_LEN;
+
+    pNewData->u.s.size = buffp-(char*)(pNewData+1);
+    *pData = pNewData;
+    (*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &output_buffer);
+
+    return MI_TRUE;
+
+}
+
+#endif
 static MI_Char g_ErrBuff[MAX_ERROR_SIZE];
 
 /* 
@@ -665,23 +1344,23 @@ static char *_BuildInitialGssAuthHeader(_In_ HttpClient_SR_SocketData * self, MI
 {
     char *rslt = NULL;
 
-    const gss_OID_desc mech_krb5 = { 9, "\052\206\110\206\367\022\001\002\002" };
-    const gss_OID_desc mech_spnego = { 6, "\053\006\001\005\005\002" };
-    const gss_OID_desc mech_iakerb = { 6, "\053\006\001\005\002\005" };
-    const gss_OID_set_desc mechset_spnego = { 1, (gss_OID) & mech_spnego };
+    static const gss_OID_desc mech_krb5 = { 9, "\052\206\110\206\367\022\001\002\002" };
+    static const gss_OID_desc mech_spnego = { 6, "\053\006\001\005\005\002" };
+    static const gss_OID_desc mech_iakerb = { 6, "\053\006\001\005\002\005" };
+    static const gss_OID_set_desc mechset_spnego = { 1, (gss_OID) & mech_spnego };
 
-    const gss_OID mechset_krb5_elems[] = { (gss_OID const)&mech_krb5,
+    static const gss_OID mechset_krb5_elems[] = { (gss_OID const)&mech_krb5,
         (gss_OID const)&mech_iakerb
     };
 
-    const gss_OID_set_desc mechset_krb5 = { 2, (gss_OID) mechset_krb5_elems };
+    static const gss_OID_set_desc mechset_krb5 = { 2, (gss_OID) mechset_krb5_elems };
 
     // The list attached to the spnego token 
 
     //gss_OID_desc const mech_ntlm = { 10, "\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a" };
     // gss_OID_set_desc mechset_krb5 = { 1, &mech_krb5 };
     // gss_OID_set_desc mechset_iakerb = { 1, &mech_iakerb };
-    const gss_OID_desc mechset_avail_elems[] = {
+    static const gss_OID_desc mechset_avail_elems[] = {
         { 10, "\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a" }, // For now we start with ntlm
         // mech_krb5,   Not yet
         // mech_iakerb,  Not yet
@@ -714,7 +1393,6 @@ static char *_BuildInitialGssAuthHeader(_In_ HttpClient_SR_SocketData * self, MI
 
     gss_buffer_desc output_token;
     gss_OID_set mechset = NULL;
-    OM_uint32 ret_flags = 0;
 
     if (self->authContext)
     {
@@ -884,10 +1562,21 @@ static char *_BuildInitialGssAuthHeader(_In_ HttpClient_SR_SocketData * self, MI
         }
     }
 
-    maj_stat = (*_g_gssClientState.Gss_Init_Sec_Context)(&min_stat, cred, &context_hdl, target_name, mechset->elements, 0,   // flags
+    if (self->private)
+    {    
+        self->negoFlags = GSS_C_CONF_FLAG|GSS_C_INTEG_FLAG;
+    }
+    else
+    {    
+        self->negoFlags = 0;
+    }        
+
+    maj_stat = (*_g_gssClientState.Gss_Init_Sec_Context)(&min_stat, cred, &context_hdl, target_name, mechset->elements, self->negoFlags,   // flags
                                     0,  // time_req,
                                     GSS_C_NO_CHANNEL_BINDINGS,  // input_chan_bindings,
-                                    GSS_C_NO_BUFFER, NULL, &output_token, &ret_flags, 0);   // time_req
+                                    GSS_C_NO_BUFFER, NULL, &output_token, &self->negoFlags, 0);   // time_req
+
+fprintf(stderr, "self->negoFlags = %x\n", self->negoFlags);                                    
 
     if (maj_stat == GSS_S_CONTINUE_NEEDED)
     {
@@ -920,6 +1609,199 @@ static char *_BuildInitialGssAuthHeader(_In_ HttpClient_SR_SocketData * self, MI
     return rslt;
 }
 
+
+/*
+ *  Evaluates the response header returned by the server . 
+ *
+ *  If the context is established returns complete, return no request header and PRT_CONTINUE
+ *  If the context needs another round trip, return PRT_RETURN_TRUE and a request header for the return request
+ *  If the context errors out,  return no request header and PRT_CONTINUE
+ *
+ */
+
+Http_CallbackResult
+HttpClient_NextAuthRequest(_In_ struct _HttpClient_SR_SocketData * self, _In_ const char *pResponseHeader, _Out_ const char **pRequestHeader, _Out_ size_t *pRequestLen)
+
+{
+    static const char POST_HEADER[] = "POST /wsman/ HTTP/1.1\r\n"\
+                                      "Connection: Keep-Alive\r\n"\
+                                      "Content-Length: 0\r\n"\
+                                      "Host: host\r\n"\
+                                      "Content-Type: application/soap+xml;charset=UTF-8\r\n";
+
+    static const size_t POST_HEADER_LEN = MI_COUNT(POST_HEADER)-1;
+
+    
+    const gss_OID_desc mech_krb5 = { 9, "\052\206\110\206\367\022\001\002\002" };
+    const gss_OID_desc mech_spnego = { 6, "\053\006\001\005\005\002" };
+    const gss_OID_desc mech_iakerb = { 6, "\053\006\001\005\002\005" };
+    // const gss_OID_desc mech_ntlm   = {10, "\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a" };
+    // gss_OID_set_desc mechset_krb5 = { 1, &mech_krb5 };
+    // gss_OID_set_desc mechset_iakerb = { 1, &mech_iakerb };
+    const gss_OID_set_desc mechset_spnego = { 1, (gss_OID) & mech_spnego };
+    
+    const gss_OID mechset_krb5_elems[] = { (gss_OID const)&mech_krb5,
+        (gss_OID const)&mech_iakerb
+    };
+    
+    const gss_OID_set_desc mechset_krb5 = { 2, (gss_OID) mechset_krb5_elems };
+    
+    OM_uint32 maj_stat = 0;
+    OM_uint32 min_stat = 0;
+    gss_ctx_id_t context_hdl = GSS_C_NO_CONTEXT;
+    gss_buffer_desc input_token, output_token;
+    gss_OID_set mechset = NULL;
+    //OM_uint32 ret_flags = 0;
+    gss_name_t target_name = (gss_name_t) self->targetName;
+    gss_cred_id_t cred = (gss_cred_id_t) self->cred;
+    gss_OID chosen_mech = NULL;
+    
+
+    if (!pRequestHeader)
+    {
+
+        // complain here
+
+        return PRT_RETURN_FALSE;
+    }    
+
+
+fprintf(stderr, "*1 isauth?\n");                                    
+    switch (self->authType)
+    {
+    case AUTH_METHOD_NEGOTIATE_WITH_CREDS:
+    case AUTH_METHOD_NEGOTIATE:
+        mechset = (gss_OID_set) & mechset_spnego;
+        break;
+    
+    case AUTH_METHOD_KERBEROS:
+        mechset = (gss_OID_set) & mechset_krb5;
+        break;
+    
+    default:
+
+        // We shouldn't be here in basic auth
+
+        return PRT_RETURN_FALSE;
+    }
+    
+    if (self->authContext)
+    {
+        context_hdl = (gss_ctx_id_t) self->authContext;
+    }
+    // This is an auth in progress, generate new request 
+    
+    self->authorizing  = TRUE;
+    self->isAuthorized = FALSE;
+    
+fprintf(stderr, "*1.1 isauth?\n");                                    
+
+    if (_getInputToken(pResponseHeader, &input_token) != 0)
+    {
+        _ReportError(self, "Authorization failed", maj_stat, min_stat);
+        self->authorizing = FALSE;
+        self->isAuthorized = FALSE;
+        return PRT_RETURN_FALSE;
+    }
+
+    // (void)DecodeToken(&input_token);
+    maj_stat = (*_g_gssClientState.Gss_Init_Sec_Context)(&min_stat, cred, &context_hdl, target_name, mechset->elements, self->negoFlags,   // flags
+                                    0,  // time_req,
+                                    GSS_C_NO_CHANNEL_BINDINGS,  // input_chan_bindings,
+                                    &input_token, &chosen_mech, /* mech type */
+                                    &output_token, &self->negoFlags, NULL);   /* time_rec */
+    
+fprintf(stderr, "*1.2isauth? chosen_mech len = %d negoFlags = %x\n", (chosen_mech)?chosen_mech->length:0, self->negoFlags);                                    
+
+    if (chosen_mech)
+    {
+        self->selectedMech = (void *)chosen_mech;    
+    }    
+    
+    // self->negoFlags = ret_flags;
+    
+    PAL_Free(input_token.value);
+    
+    if (maj_stat == GSS_S_COMPLETE)
+    {
+
+        // If the result is complete, then we are done and can 
+        // send whatever request is pending, if any
+    
+fprintf(stderr, "*2Auth Complete self->negoFlags = %x\n", self->negoFlags);                                    
+    
+        self->encrypting   = (self->negoFlags & (GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG)) == (GSS_C_CONF_FLAG | GSS_C_INTEG_FLAG);       // All data transfered will be encrypted.
+        self->readyToSend  = TRUE;
+        self->authorizing  = FALSE;
+        self->isAuthorized = TRUE;
+
+        *pRequestHeader = NULL;
+        return PRT_CONTINUE;
+    }
+    else if (maj_stat == GSS_S_CONTINUE_NEEDED)
+    {
+
+        // Continue needed means we need to create a request header for sending
+
+        MI_Uint32 header_len = 0;
+        char *auth_header = _BuildClientGssAuthHeader(self, &output_token, &header_len);
+    
+fprintf(stderr, "*3Auth Continue self->negoFlags = %x\n", self->negoFlags);
+    
+        /* create header page */
+
+        char *request_header = PAL_Malloc(POST_HEADER_LEN+header_len+5);
+        char *requestp = request_header;
+
+        memcpy(requestp, POST_HEADER, POST_HEADER_LEN);
+        requestp += POST_HEADER_LEN;
+
+        memcpy(requestp, auth_header, header_len);
+        requestp += header_len;
+
+        *requestp++ = '\r';
+        *requestp++ = '\n';
+        *requestp++ = '\r';
+        *requestp++ = '\n';
+        *requestp   = '\0';
+
+        *pRequestHeader = request_header;
+        *pRequestLen    = (requestp - request_header);
+    
+        (void)(*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &output_token);
+    
+        return PRT_RETURN_TRUE;
+    }
+    else {
+        HttpClient *client = (HttpClient *) self->base.data;
+    
+        // Handle errors
+        gss_buffer_desc gss_msg = { 0 };
+        gss_buffer_desc mech_msg = { 0 };
+    
+        _getStatusMsg(maj_stat, GSS_C_GSS_CODE, &gss_msg);
+        _getStatusMsg(min_stat, GSS_C_MECH_CODE, &mech_msg);
+        trace_HTTP_ClientAuthFailed(gss_msg.value, mech_msg.value);
+#if defined(CONFIG_ENABLE_WCHAR)
+        (void)Swprintf(g_ErrBuff, sizeof(g_ErrBuff), 
+                       L"Access Denied %s %s\n",
+                       (char *)gss_msg.value, (char *)mech_msg.value);
+#else
+        (void)Snprintf(g_ErrBuff, sizeof(g_ErrBuff),
+                       "Access Denied %s %s\n",
+                       (char *)gss_msg.value, (char *)mech_msg.value);
+#endif
+    
+        (*(HttpClientCallbackOnStatus2)(client->callbackOnStatus)) (client, client->callbackData, MI_RESULT_OK, g_ErrBuff);
+    
+        (*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &gss_msg);
+        (*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &mech_msg);
+    
+        *pRequestHeader = NULL;
+
+        return PRT_RETURN_FALSE;
+    }
+}
 #endif
 
 Http_CallbackResult HttpClient_RequestAuthorization(_In_ struct
@@ -973,6 +1855,7 @@ Http_CallbackResult HttpClient_RequestAuthorization(_In_ struct
     }
 }
 
+
 Http_CallbackResult HttpClient_IsAuthorized(_In_ struct _HttpClient_SR_SocketData * self)
 
 {
@@ -981,7 +1864,6 @@ Http_CallbackResult HttpClient_IsAuthorized(_In_ struct _HttpClient_SR_SocketDat
 
     //HttpClient* client = (HttpClient*)self->base.data;
     HttpClientResponseHeader *pheaders = &self->recvHeaders;
-    //Http_CallbackResult r;
     char *auth_header = NULL;
 
     int i = 0;
@@ -1004,6 +1886,8 @@ Http_CallbackResult HttpClient_IsAuthorized(_In_ struct _HttpClient_SR_SocketDat
 
     }
 
+fprintf(stderr, "*1 isauth?\n");                                    
+
     switch (self->authType)
     {
     case AUTH_METHOD_BASIC:
@@ -1023,8 +1907,10 @@ Http_CallbackResult HttpClient_IsAuthorized(_In_ struct _HttpClient_SR_SocketDat
                 // We authorise broken error codes because of the possibility of 
                 // error content, eg post mortem dump info
 
-                self->authorizing = FALSE;
+                self->authorizing  = FALSE;
                 self->isAuthorized = TRUE;
+                self->encrypting   = FALSE;
+                self->readyToSend  = TRUE;
                 return PRT_CONTINUE;
 
             case HTTP_ERROR_CODE_UNAUTHORIZED:
@@ -1033,6 +1919,8 @@ Http_CallbackResult HttpClient_IsAuthorized(_In_ struct _HttpClient_SR_SocketDat
 
                 self->authorizing = FALSE;
                 self->isAuthorized = FALSE;
+                self->encrypting   = FALSE;
+                self->readyToSend  = FALSE;
                 return PRT_RETURN_FALSE;
             }
         }
@@ -1051,14 +1939,22 @@ Http_CallbackResult HttpClient_IsAuthorized(_In_ struct _HttpClient_SR_SocketDat
         {
             switch (pheaders->httpError)
             {
+            case HTTP_ERROR_CODE_OK:
+                self->encrypting   = (self->negoFlags & (GSS_C_INTEG_FLAG | GSS_C_CONF_FLAG)) == (GSS_C_CONF_FLAG | GSS_C_INTEG_FLAG);       // All data transfered will be encrypted.
+                self->readyToSend  = TRUE;
+                self->readyToSend  = TRUE;
+                self->authorizing = FALSE;
+                self->isAuthorized = TRUE;
+                return PRT_CONTINUE;
+
             case HTTP_ERROR_CODE_BAD_REQUEST:
             case HTTP_ERROR_CODE_INTERNAL_SERVER_ERROR:
-            case HTTP_ERROR_CODE_OK:
             case HTTP_ERROR_CODE_NOT_SUPPORTED:
 
                 // We authorise broken error codes because of the possibility of 
                 // error content, eg post mortem dump info
 
+                self->readyToSend  = TRUE;
                 self->authorizing = FALSE;
                 self->isAuthorized = TRUE;
                 return PRT_CONTINUE;
@@ -1066,171 +1962,105 @@ Http_CallbackResult HttpClient_IsAuthorized(_In_ struct _HttpClient_SR_SocketDat
             case HTTP_ERROR_CODE_UNAUTHORIZED:
             case 409:          // proxy unauthorised
             default:
-
+                self->readyToSend  = TRUE;
                 self->authorizing = FALSE;
                 self->isAuthorized = FALSE;
                 return PRT_RETURN_FALSE;
             }
         }
         else {
-            const gss_OID_desc mech_krb5 = { 9, "\052\206\110\206\367\022\001\002\002" };
-            const gss_OID_desc mech_spnego = { 6, "\053\006\001\005\005\002" };
-            const gss_OID_desc mech_iakerb = { 6, "\053\006\001\005\002\005" };
-            // const gss_OID_desc mech_ntlm   = {10, "\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a" };
-            // gss_OID_set_desc mechset_krb5 = { 1, &mech_krb5 };
-            // gss_OID_set_desc mechset_iakerb = { 1, &mech_iakerb };
-            const gss_OID_set_desc mechset_spnego = { 1, (gss_OID) & mech_spnego };
+            Http_CallbackResult r;
+            // When we say response here we mean the response to their response.
+            char *reply = NULL;
+            size_t reply_len = 0;
 
-            const gss_OID mechset_krb5_elems[] = { (gss_OID const)&mech_krb5,
-                (gss_OID const)&mech_iakerb
-            };
-
-            const gss_OID_set_desc mechset_krb5 = { 2, (gss_OID) mechset_krb5_elems };
-
-            OM_uint32 maj_stat = 0;
-            OM_uint32 min_stat = 0;
-            gss_ctx_id_t context_hdl = GSS_C_NO_CONTEXT;
-            gss_buffer_desc input_token, output_token;
-            gss_OID_set mechset = NULL;
-            OM_uint32 ret_flags = 0;
-            gss_name_t target_name = (gss_name_t) self->targetName;
-            gss_cred_id_t cred = (gss_cred_id_t) self->cred;
-
-            switch (self->authType)
+            r = HttpClient_NextAuthRequest(self, auth_header, (const char**)&reply, &reply_len);
+            switch (r)
             {
-            case AUTH_METHOD_NEGOTIATE_WITH_CREDS:
-            case AUTH_METHOD_NEGOTIATE:
-                mechset = (gss_OID_set) & mechset_spnego;
-                break;
+            case PRT_CONTINUE:
 
-            case AUTH_METHOD_KERBEROS:
-                mechset = (gss_OID_set) & mechset_krb5;
-                break;
+                // If we have a pending request, then we need to set up for send
 
+                if (self->verb)
+                {
+                    self->sendHeader =  _CreateHttpHeader(self->verb, self->uri, self->contentType, NULL, NULL, self->data? self->data->u.s.size: 0);
+                    self->sendPage   =  self->data;
+
+                    self->verb        = NULL;
+                    self->uri         = NULL;
+                    self->contentType = NULL;
+                    self->data        = NULL;
+
+                    // Force it into a write state so we can send the original request
+
+                    self->base.mask &= ~SELECTOR_READ;
+                    self->base.mask |= SELECTOR_WRITE;
+                    self->recvingState = RECV_STATE_HEADER;
+                }     
+                return r;
+
+            case PRT_RETURN_FALSE:
+
+                // We had an error
+
+                return r;
+
+            case PRT_RETURN_TRUE:
+                 // We need to go around again.
+                 if (reply)
+                 {
+                     self->base.mask |= SELECTOR_WRITE;
+                     self->base.mask &= ~SELECTOR_READ;
+                 
+                     self->sentSize = 0;
+                     self->sendingState = RECV_STATE_HEADER;
+     
+                     if (!_WriteAuthRequest(self, reply, reply_len))
+                     {
+                         trace_SendIN_IO_thread_HttpSocket_WriteFailed();
+                     }
+     
+                     // Force it into read state so we can get the next header
+                     self->base.mask &= ~SELECTOR_WRITE;
+                     self->base.mask |= SELECTOR_READ;
+                     self->recvingState = RECV_STATE_HEADER;
+     
+                     PAL_Free(reply);
+                     reply = NULL;
+                 }
+                 else
+                 {    
+                     if (self->verb)
+                     {
+                         self->sendHeader =  _CreateHttpHeader(self->verb, self->uri, self->contentType, NULL, NULL, self->data? self->data->u.s.size: 0);
+                         self->sendPage   =  self->data;
+
+                         self->verb        = NULL;
+                         self->uri         = NULL;
+                         self->contentType = NULL;
+                         self->data        = NULL;
+
+                         // Force it into a write state so we can send the original request
+
+                         self->base.mask &= ~SELECTOR_READ;
+                         self->base.mask |= SELECTOR_WRITE;
+                         self->recvingState = RECV_STATE_HEADER;
+                     }     
+
+                 }
+                     
+                return r;
             default:
-                // Cant get here except by corruption
-                break;
-            }
-
-            if (self->authContext)
-            {
-                context_hdl = (gss_ctx_id_t) self->authContext;
-            }
-            // If this is a mutual auth in progress, generate new request 
-
-            self->authorizing = TRUE;
-            self->isAuthorized = FALSE;
-
-            if (_getInputToken(auth_header, &input_token) != 0)
-            {
-                _ReportError(self, "Authorization failed", maj_stat, min_stat);
-                self->authorizing = FALSE;
-                self->isAuthorized = FALSE;
                 return PRT_RETURN_FALSE;
-            }
-            // (void)DecodeToken(&input_token);
-            maj_stat = (*_g_gssClientState.Gss_Init_Sec_Context)(&min_stat, cred, &context_hdl, target_name, mechset->elements, 0,   // flags
-                                            0,  // time_req,
-                                            GSS_C_NO_CHANNEL_BINDINGS,  // input_chan_bindings,
-                                            &input_token, NULL, /* mech type */
-                                            &output_token, &ret_flags, NULL);   /* time_rec */
+            }    
 
-            PAL_Free(input_token.value);
-
-            if (maj_stat == GSS_S_COMPLETE)
-            {
-                self->authorizing = FALSE;
-                self->isAuthorized = TRUE;
-                return PRT_CONTINUE;
-            }
-            else if (maj_stat == GSS_S_CONTINUE_NEEDED)
-            {
-                Http_CallbackResult r;
-                Page *data = self->data;
-                MI_Uint32 header_len = 0;
-                char *auth_header = _BuildClientGssAuthHeader(self,
-                                                              &output_token,
-                                                              &header_len);
-
-                /* create header page */
-                self->sendHeader =
-                    _CreateHttpHeader(self->verb, self->uri,
-                                      self->contentType, auth_header, NULL, data ? data->u.s.size : 0);
-                if (data != NULL)
-                {
-                    self->sendPage = data;
-                    self->data = 0;
-                }
-                else
-                    self->sendPage = NULL;
-
-                /* set status to failed, until we know more details */
-
-                self->status = MI_RESULT_FAILED;
-                self->sentSize = 0;
-                self->sendingState = RECV_STATE_HEADER;
-                self->base.mask |= SELECTOR_WRITE;
-
-                r = _WriteClientHeader(self);
-                while (PRT_CONTINUE == r && self->sendPage)
-                {
-
-                    // If there is data to be sent, loop WriteClientData until it 
-                    // says true or false. Continue means there was an E_WOULD_BLOCK
-
-                    r = _WriteClientData(self);
-                }
-
-                if (auth_header)
-                {
-                    PAL_Free(auth_header);
-                }
-
-                (void)(*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &output_token);
-
-                // Then we are Successful. If the 
-                if (maj_stat == GSS_S_COMPLETE)
-                {
-                    self->authorizing = FALSE;
-                    self->isAuthorized = TRUE;
-                    return PRT_RETURN_TRUE;
-                }
-                else {
-                    return PRT_RETURN_TRUE;
-                }
-            }
-            else {
-                HttpClient *client = (HttpClient *) self->base.data;
-
-                // Handle errors
-                gss_buffer_desc gss_msg = { 0 };
-                gss_buffer_desc mech_msg = { 0 };
-
-                _getStatusMsg(maj_stat, GSS_C_GSS_CODE, &gss_msg);
-                _getStatusMsg(min_stat, GSS_C_MECH_CODE, &mech_msg);
-                trace_HTTP_ClientAuthFailed(gss_msg.value, mech_msg.value);
-#if defined(CONFIG_ENABLE_WCHAR)
-                (void)Swprintf(g_ErrBuff, sizeof(g_ErrBuff), 
-                               L"Access Denied %s %s\n",
-                               (char *)gss_msg.value, (char *)mech_msg.value);
-#else
-                (void)Snprintf(g_ErrBuff, sizeof(g_ErrBuff),
-                               "Access Denied %s %s\n",
-                               (char *)gss_msg.value, (char *)mech_msg.value);
-#endif
-
-                (*(HttpClientCallbackOnStatus2)(client->callbackOnStatus)) (client, client->callbackData, MI_RESULT_OK, g_ErrBuff);
-
-                (*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &gss_msg);
-                (*_g_gssClientState.Gss_Release_Buffer)(&min_stat, &mech_msg);
-
-            }
+            return r;
         }
 #endif
         return PRT_RETURN_FALSE;
 
     default:
-        return PRT_CONTINUE;
+        return PRT_RETURN_FALSE;
 
     }
 }

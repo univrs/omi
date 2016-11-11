@@ -26,6 +26,7 @@
 
 #define ENABLE_TRACING 1
 #define FORCE_TRACING 1
+#define FORCE_ENCRYPTION 1
 
 #ifdef CONFIG_POSIX
 #include <openssl/ssl.h>
@@ -531,9 +532,14 @@ static Http_CallbackResult _ReadHeader(
     MI_Boolean fullHeaderReceived = MI_FALSE;
     Http_CallbackResult rslt = PRT_CONTINUE;
 
+
+fprintf(stderr, "ReadHeader isAuth = %d\n", handler->isAuthorized);
+
     /* are we done with header? */
     if (handler->recvingState != RECV_STATE_HEADER)
         return PRT_CONTINUE;
+
+fprintf(stderr, "ReadHeader*2\n");
 
     buf = handler->recvBuffer + handler->receivedSize;
     buf_size = handler->recvBufferSize - handler->receivedSize;
@@ -564,6 +570,8 @@ static Http_CallbackResult _ReadHeader(
 
     /* check header */
     LOGD2((ZT("_ReadHeader - Received buffer: %s"), buf));
+
+fprintf(stderr, "ReadHeader*3\n");
 
     /* did we get full header? */
     buf = handler->recvBuffer;
@@ -703,6 +711,7 @@ static Http_CallbackResult _ReadHeader(
 
     if (handler->receivedSize != 0)
         memcpy(handler->recvPage + 1, data, handler->receivedSize);
+
     handler->recvingState = RECV_STATE_CONTENT;
 
     /* Check the authentication. If we need to recycle, send a response to the response. */
@@ -710,7 +719,13 @@ static Http_CallbackResult _ReadHeader(
     if (!handler->isAuthorized) 
     {
         rslt = HttpClient_IsAuthorized(handler);
+fprintf(stderr, "ReadHeader*5 isAuth = %d\n", handler->isAuthorized);
+        if (rslt != PRT_CONTINUE)
+        {
+            return rslt; 
+        }        
     }
+
 
     if (handler->isAuthorized && PRT_CONTINUE != rslt) 
     {
@@ -742,6 +757,9 @@ static Http_CallbackResult _ReadData(
     char* buf;
     size_t buf_size, received;
     MI_Result r;
+#if defined(ENCRYPT_DECRYPT)    
+    Page *pOldRecvPage = NULL;
+#endif    
 
     /* are we in the right state? */
     if (handler->recvingState != RECV_STATE_CONTENT)
@@ -790,6 +808,48 @@ static Http_CallbackResult _ReadData(
         _WriteTraceFile(ID_HTTPCLIENTRECVTRACEFILE, (char*)(handler->recvPage + 1), handler->receivedSize);
     }
 
+
+    if (handler->contentLength == 0)
+    {
+        handler->recvPage = 0;
+        handler->receivedSize = 0;
+        memset(&handler->recvHeaders, 0, sizeof(handler->recvHeaders));
+        handler->recvingState = RECV_STATE_HEADER;
+        return PRT_RETURN_TRUE;
+    }
+            
+
+    if (!handler->ssl)
+    {
+
+#if ENCRYPT_DECRYPT
+        pOldRecvPage = handler->recvPage;
+
+        if (!HttpClient_DecryptData(handler, &handler->recvHeaders, &handler->recvPage) )
+        {
+            // Failed decrypt. No encryption counts as success. So this is an error in the decrpytion, probably 
+            // bad credential
+
+            handler->recvPage = 0;
+            handler->receivedSize = 0;
+            memset(&handler->recvHeaders, 0, sizeof(handler->recvHeaders));
+            handler->recvingState = RECV_STATE_HEADER;
+            return PRT_RETURN_FALSE;
+        }
+        else 
+        {
+            if (FORCE_TRACING || handler->enableTracing)
+            {
+                char after_decrypt[] = "\n------------ After Decryption ---------------\n";
+                char after_decrypt_end[] = "\n-------------- End Decrypt ------------------\n";
+                _WriteTraceFile(ID_HTTPRECVTRACEFILE, &after_decrypt, sizeof(after_decrypt));
+                _WriteTraceFile(ID_HTTPRECVTRACEFILE, (char *)(handler->recvPage+1), handler->recvPage->u.s.size);
+                _WriteTraceFile(ID_HTTPRECVTRACEFILE, &after_decrypt_end, sizeof(after_decrypt_end));
+            }
+        }
+#endif
+    }
+
     if (handler->isAuthorized) 
     {
         /* Invoke user's callback with header information */
@@ -811,6 +871,15 @@ static Http_CallbackResult _ReadData(
         (*self->callbackOnStatus)( self, self->callbackData, MI_RESULT_OK, NULL);
     }
 
+
+#if ENCRYPT_DECRYPT
+    if (pOldRecvPage != NULL)
+    {
+        LOGD2((ZT("_ReadData - Freeing recvPage. socket: %d"), (int)handler->base.sock));
+        PAL_Free(pOldRecvPage);
+        pOldRecvPage = NULL;
+    }
+#endif
 
     if (handler->recvPage != NULL)
     {
@@ -1067,6 +1136,8 @@ Http_CallbackResult _WriteClientHeader(
     size_t buf_size, sent;
     MI_Result r;
 
+fprintf(stderr, "WriteHeader\n");
+
     /* Do we have any data to send? */
     if (!handler->sendHeader)
         return PRT_RETURN_TRUE;
@@ -1077,6 +1148,47 @@ Http_CallbackResult _WriteClientHeader(
 
     LOGD2((ZT("_WriteHeader - Begin")));
 
+#if ENCRYPT_DECRYPT
+
+    if (handler->encrypting)
+    {
+        Page *pOldPage   = handler->sendPage;
+        Page *pOldHeader = handler->sendHeader;
+
+        if (!HttpClient_EncryptData(handler, &handler->sendHeader, &handler->sendPage) )
+        {
+             
+            // If we fail it was an error. Not encrypting counts as failure Complain and bail
+
+            trace_HTTP_EncryptionFailed();
+            return PRT_RETURN_FALSE;
+        }
+        else
+        {
+            if (FORCE_TRACING || handler->enableTracing)
+            {
+                char before_encrypt[] = "\n------------ Before Encryption ---------------\n";
+                char before_encrypt_end[] = "\n------------ End Before ---------------\n";
+                _WriteTraceFile(ID_HTTPCLIENTSENDTRACEFILE, &before_encrypt, sizeof(before_encrypt));
+                _WriteTraceFile(ID_HTTPCLIENTSENDTRACEFILE, (char *)(pOldHeader+1), pOldHeader->u.s.size);
+                _WriteTraceFile(ID_HTTPCLIENTSENDTRACEFILE, (char *)(pOldPage+1), pOldPage->u.s.size);
+                _WriteTraceFile(ID_HTTPCLIENTSENDTRACEFILE, &before_encrypt_end, sizeof(before_encrypt_end));
+            }
+
+            // Can we delete these or are they part of a batch and must be deleted separately?
+            if (pOldHeader != handler->sendHeader)
+            {    
+                PAL_Free(pOldHeader);
+            }
+            if (pOldPage != handler->sendPage)
+            {
+                PAL_Free(pOldPage);
+            }        
+        }
+    }
+
+#endif
+
     buf = ((char*)(handler->sendHeader + 1)) + handler->sentSize;
     buf_size = handler->sendHeader->u.s.size - handler->sentSize;
     sent = 0;
@@ -1086,6 +1198,7 @@ Http_CallbackResult _WriteClientHeader(
         _WriteTraceFile(ID_HTTPCLIENTSENDTRACEFILE, buf, buf_size);
     }
 
+fprintf(stderr, "WriteHeader*2\n");
     r = _Sock_Write(handler, buf, buf_size, &sent);
     LOGD2((ZT("_WriteHeader - _Sock_Write result: %d (%s), socket: %d, sent: %d"), (int)r, mistrerror(r), (int)handler->base.sock, (int)sent));
 
@@ -1101,6 +1214,7 @@ Http_CallbackResult _WriteClientHeader(
         return PRT_RETURN_FALSE;
     }
 
+fprintf(stderr, "WriteHeader*3\n");
     handler->sentSize += sent;
     handler->headVerb = buf_size > 4 && Strncasecmp(buf, "HEAD", 4) == 0;
 
@@ -1116,6 +1230,7 @@ Http_CallbackResult _WriteClientHeader(
     handler->sentSize = 0;
     handler->sendingState = RECV_STATE_CONTENT;
 
+fprintf(stderr, "WriteHeader*4\n");
     LOGD2((ZT("_WriteHeader - OK exit")));
     return PRT_CONTINUE;
 }
@@ -1126,6 +1241,8 @@ Http_CallbackResult _WriteClientData(
     char* buf;
     size_t buf_size, sent;
     MI_Result r;
+
+fprintf(stderr, "WriteData\n");
 
     LOGD2((ZT("_WriteClientData - Begin")));
     /* are we in the right state? */
@@ -1142,14 +1259,18 @@ Http_CallbackResult _WriteClientData(
         handler->base.mask &= ~SELECTOR_WRITE;
         handler->base.mask |= SELECTOR_READ;
 
+fprintf(stderr, "WriteData*2\n");
         LOGW2((ZT("_WriteClientData - Content is empty. Continuing")));
         return PRT_CONTINUE;
     }
+
+
 
     buf = ((char*)(handler->sendPage + 1)) + handler->sentSize;
     buf_size = handler->sendPage->u.s.size - handler->sentSize;
     sent = 0;
 
+fprintf(stderr, "WriteData*3\n");
     r = _Sock_Write(handler, buf, buf_size, &sent);
     LOGD2((ZT("_WriteClientData - HTTPClient sent %u / %u bytes with result %d (%s)"), (unsigned int)sent, (unsigned int)buf_size, (int)r, mistrerror(r)));
 
@@ -1189,6 +1310,7 @@ Http_CallbackResult _WriteClientData(
     handler->base.mask &= ~SELECTOR_WRITE;
     handler->base.mask |= SELECTOR_READ;
 
+fprintf(stderr, "WriteData*4\n");
     LOGD2((ZT("_WriteClientData - OK exit. returning: %d"), PRT_CONTINUE));
 
     return PRT_CONTINUE;
@@ -1797,6 +1919,7 @@ Page* _CreateHttpHeader(
     "Connection: Keep-Alive\r\n" \
     "Host: host\r\n"
 
+
 #if 0
 #define HTTP_HEADER_FORMAT_NOCL "%s %s HTTP/1.1\r\n" \
     "Connection: Keep-Alive\r\n" \
@@ -1974,6 +2097,8 @@ MI_Result _UnpackDestinationOptions(
     _Out_opt_ char **pUsername,
     _Out_opt_ char **pPassword,
     _Out_opt_ MI_Uint32 *pPasswordLen,
+    _Out_opt_ MI_Boolean *pPrivacy,
+    _Out_opt_ const MI_Char **pTransport,
     _Out_opt_ char **pTrustedCertsDir,
     _Out_opt_ char **pCertFile,
     _Out_opt_ char **pPrivateKeyFile )
@@ -2154,6 +2279,24 @@ MI_Result _UnpackDestinationOptions(
         *pPasswordLen = password_len;
     }
 
+    if (pTransport)
+    {
+        // We just return the string and do the processing later using tcscasecmp
+
+        *pTransport = MI_T("HTTPS");
+        if (MI_DestinationOptions_GetTransport(pDestOptions, pTransport) == MI_RESULT_OK)
+        {
+
+        }
+    }
+
+    if (pPrivacy) {
+        *pPrivacy = TRUE;
+        if (MI_DestinationOptions_GetPacketPrivacy(pDestOptions, pPrivacy) != MI_RESULT_OK)
+        {
+             // Warn that we default to false
+        }
+    }    
  
     if (pTrustedCertsDir)
     { 
@@ -2309,6 +2452,9 @@ MI_Result HttpClient_New_Connector2(
     char* cert_file         = (char*)certFile;
     char* private_key_file  = (char*)certFile;
 
+    MI_Boolean privacy      = TRUE;
+    const MI_Char *transport = MI_T("HTTPS");
+
     AuthMethod authtype =  AUTH_METHOD_BYPASS;
     char *username = NULL;
     char *password = NULL;
@@ -2327,9 +2473,13 @@ MI_Result HttpClient_New_Connector2(
 
     if (pDestOptions)
     {
-        r = _UnpackDestinationOptions(pDestOptions, &authtype, &username, &password, &password_len, 
+        r = _UnpackDestinationOptions(pDestOptions, &authtype, &username, &password, &password_len, &privacy, &transport,
                                   &trusted_certs_dir, &cert_file, &private_key_file);
     }
+
+#ifdef FORCE_ENCRYPTION
+    privacy = TRUE;
+#endif    
 
 #ifdef CONFIG_POSIX
     /* Allocate SSL context */
@@ -2376,6 +2526,10 @@ MI_Result HttpClient_New_Connector2(
 
         self->connector->isAuthorized = (authtype == AUTH_METHOD_NONE);
         self->connector->authorizing  = FALSE;
+        self->connector->private      = privacy && !secure;
+        self->connector->encrypting   = FALSE; // The auth will establish this
+        self->connector->readyToSend  = FALSE;
+        self->connector->negoFlags    = FALSE;
 
         self->connector->authType = authtype;
         self->connector->username = (char*)username;
@@ -2383,6 +2537,7 @@ MI_Result HttpClient_New_Connector2(
         self->connector->passwordLen = password_len;
         self->connector->authContext = NULL;
         self->connector->cred        = NULL;
+        self->connector->selectedMech = NULL;
 
         if (Log_GetLevel() >= LOG_DEBUG)
         {    
@@ -2627,12 +2782,13 @@ MI_Result HttpClient_StartRequestV2(
         case PRT_CONTINUE:
             // We need to to the auth loop.
 
-        if (self->connector->authType == AUTH_METHOD_BASIC)
-        {
+            if (self->connector->authType == AUTH_METHOD_BASIC)
+            {
                  // Basic sends the payload first time
 
                  break;
             }
+
             self->connector->sendHeader =
                 _CreateHttpAuthRequest(verb, uri, contentType, auth_header);
 
