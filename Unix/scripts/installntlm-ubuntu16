@@ -1,0 +1,77 @@
+#!/bin/bash
+
+SCX_BUNDLE=$(readlink -f ~/scx-1.6.3-66.universal.x64.sh)
+POWERSHELL_DEB=$(readlink -f ~/powershell_6.0.0-alpha.12-1ubuntu1.16.04.1_amd64.deb)
+PSRP_DEB=$(readlink -f ~/psrp-1.0.0-0.universal.x64.deb)
+
+
+MY_PATH=$(readlink -f $YOUR_ARG)
+
+# This script automates setting up an ubuntu 16 machine for testing ntlm
+if [ "$EUID" = "0" ]; then
+   echo "This script should NOT be run as root" 1>&2
+   exit 1
+fi
+
+set -e
+set -x
+
+is_installed()
+{
+    if [ -z $1 ]; then
+        echo "is_installed() requires a package name as parameter"
+        exit 1;
+    fi
+    
+    dpkg-query -W -f='${Status}\n' $1 | head -n1 | awk '{print $3;}' | grep -q '^installed$' > /dev/null 2>&1
+    return $?
+}
+
+echo "Install SCX"
+if ! is_installed scx || ! is_installed omi; then
+    if [ -f $SCX_BUNDLE ]; then
+        sudo $SCX_BUNDLE --install
+    else
+        echo "Failed to find $SCX_BUNDLE" 1>&2
+        exit 1
+    fi
+else
+    echo "SCX and OMI already installed"
+fi
+
+echo "# Install Powershell"
+if ! is_installed powershell; then
+    if [ -f $POWERSHELL_DEB ]; then
+        sudo dpkg -i $POWERSHELL_DEB
+    else
+        wget https://raw.githubusercontent.com/PowerShell/PowerShell/master/tools/download.sh
+        bash download.sh
+    fi
+else
+    echo "Powershell already installed"
+fi
+
+echo "Install PSL OMI provider"
+if ! is_installed omi-psrp-server; then
+    if [ -f $PSRP_DEB ]; then
+        sudo dpkg -i $PSRP_DEB
+    else
+        echo "Failed to find $PSRP_DEB" 1>&2
+        exit 1
+    fi
+else
+    echo "OMI PSRP server already installed"
+fi
+
+echo "# Install and configure GSS NTLM SSP"
+if ! is_installed gss-ntlmssp; then
+    # echo "Get up to date"
+    # sudo apt-get update
+    sudo apt install gss-ntlmssp -y
+    # Rename file so it is actually loaded to enable NTLM
+    if [ -f /etc/gss/mech.d/mech.ntlmssp ]; then
+        sudo mv /etc/gss/mech.d/mech.ntlmssp /etc/gss/mech.d/mech.ntlmssp.conf
+    fi
+    # Fix prefix
+    # sudo sed -i 's/${prefix}/\/usr/g' /etc/gss/mech.d/mech.ntlmssp.conf
+fi
