@@ -2524,10 +2524,10 @@ MI_Result HttpClient_StartRequest(
    static const char AUTH_HDR[]           = "Authorization:";
    const size_t      AUTH_HDR_LEN         = MI_COUNT(AUTH_HDR);
 
-   if (headers) {
-
+   if (headers)
+   {
        extra_headers.size = headers->size;
-       extra_headers.data = (const char **)PAL_Malloc(sizeof(char *)*extra_headers.size);
+       extra_headers.data = (headers->size != 0) ? (const char **)PAL_Malloc(sizeof(char *)*extra_headers->size) : NULL;
 
        int i = 0;
        for (i = 0; i < headers->size; i++ ) 
