@@ -4,9 +4,6 @@ SCX_BUNDLE=$(readlink -f ~/scx-1.6.3-66.universal.x64.sh)
 POWERSHELL_DEB=$(readlink -f ~/powershell_6.0.0-alpha.12-1ubuntu1.16.04.1_amd64.deb)
 PSRP_DEB=$(readlink -f ~/psrp-1.0.0-0.universal.x64.deb)
 
-
-MY_PATH=$(readlink -f $YOUR_ARG)
-
 # This script automates setting up an ubuntu 16 machine for testing ntlm
 if [ "$EUID" = "0" ]; then
    echo "This script should NOT be run as root" 1>&2
