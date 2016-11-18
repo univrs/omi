@@ -359,7 +359,7 @@ static MI_Result _Sock_Read(
     {
         MI_Result res = Sock_Read(handler->base.sock, buf, buf_size, sizeRead);
 
-        LOGD2((ZT("_Sock_Read - After regular read. socket: %d, result: %d (%s), bytes read: %u / %u"), handler->base.sock, (int)res, mistrerror(res), (unsigned int)*sizeRead, (unsigned int)buf_size));
+        fprintf(stderr, "\n_Sock_Read - After regular read. socket: %d, result: %d (%s), bytes read: %u / %u", handler->base.sock, (int)res, mistrerror(res), (unsigned int)*sizeRead, (unsigned int)buf_size);
         return res;
     }
 
@@ -370,16 +370,16 @@ static MI_Result _Sock_Read(
     *sizeRead = 0;
 
     res = SSL_read(handler->ssl, buf, buf_size);
-    LOGD2((ZT("_Sock_Read - SSL_Read returned: %d (< 0 for error) / %u bytes read, errno: %d (%s)"), res, (unsigned int)buf_size, errno, strerror(errno)));
+    fprintf(stderr, "\n_Sock_Read - SSL_Read returned: %d (< 0 for error) / %u bytes read, errno: %d (%s)", res, (unsigned int)buf_size, errno, strerror(errno));
     if (res == 0)
     {
-        LOGW2((ZT("_Sock_Read - SSL socket connection closed. socket: %d"), handler->base.sock));
+        fprintf(stderr, "\n_Sock_Read - SSL socket connection closed. socket: %d", handler->base.sock);
         return MI_RESULT_OK;    /* connection closed */
     }
 
     if (res > 0)
     {
-        LOGD2((ZT("_Sock_read - Bytes read: %d"), res));
+        fprintf(stderr, "\n_Sock_read - Bytes read: %d", res);
         *sizeRead = res;
         return MI_RESULT_OK;    /* ok */
     }
@@ -391,11 +391,11 @@ static MI_Result _Sock_Read(
         handler->reverseOperations = MI_TRUE;   /* wait until write is allowed */
         handler->base.mask &= ~SELECTOR_READ;
         handler->base.mask |= SELECTOR_WRITE;
-        LOGD2((ZT("_Sock_Read - SSL_read/accept returned WANT_WRITE")));
+        fprintf(stderr, "\n_Sock_Read - SSL_read/accept returned WANT_WRITE");
         return MI_RESULT_WOULD_BLOCK;
 
     case SSL_ERROR_WANT_READ:
-        LOGD2((ZT("Sock_Read - SSL_read/accept returned WANT_READ")));
+        fprintf(stderr, "\nSock_Read - SSL_read/accept returned WANT_READ");
         return MI_RESULT_WOULD_BLOCK;
 
     case SSL_ERROR_SYSCALL:
@@ -404,7 +404,7 @@ static MI_Result _Sock_Read(
             EINPROGRESS == errno)
             return MI_RESULT_WOULD_BLOCK;
 
-        LOGE2((ZT("Sock_Read - SSL_read returned OS error %d (%s)"), errno, strerror(errno)));
+        fprintf(stderr, "\nSock_Read - SSL_read returned OS error %d (%s)", errno, strerror(errno));
         trace_SSLRead_UnexpectedSysError(errno);
         break;
 
@@ -417,7 +417,7 @@ static MI_Result _Sock_Read(
                 char err_txt[200];
 
                 ERR_error_string_n(err, err_txt, sizeof (err_txt));
-                LOGE2((ZT("_Sock_Read - SSL_read returned OpenSSL error: %lu (%s)"), err, err_txt));
+                fprintf(stderr, "\n_Sock_Read - SSL_read returned OpenSSL error: %lu (%s)", err, err_txt);
             }
         }
         break;
@@ -437,7 +437,7 @@ static MI_Result _Sock_Write(
     if (!handler->ssl)
     {
         MI_Result res = Sock_Write(handler->base.sock, buf, buf_size, sizeWritten);
-        LOGD2((ZT("_Sock_Write - Non-SSS write. Sock_Write returned %d (%s). %u / %u bytes sent"), res, mistrerror(res), (unsigned int)*sizeWritten, (unsigned int)buf_size));
+        fprintf(stderr, "\n_Sock_Write - Non-SSS write. Sock_Write returned %d (%s). %u / %u bytes sent", res, mistrerror(res), (unsigned int)*sizeWritten, (unsigned int)buf_size);
         return res;
     }
 
@@ -452,12 +452,12 @@ static MI_Result _Sock_Write(
     if (handler->connectDone)
     {
         res = SSL_write(handler->ssl, buf, buf_size);
-        LOGD2((ZT("_Sock_Write - SSL_write using socket %d returned %d (< 0 for error) / %u bytes written, errno: %d (%s)"), handler->base.sock, res, (unsigned int)buf_size, errno, strerror(errno)));
+        fprintf(stderr, "\n_Sock_Write - SSL_write using socket %d returned %d (< 0 for error) / %u bytes written, errno: %d (%s)", handler->base.sock, res, (unsigned int)buf_size, errno, strerror(errno));
     }
     else
     {
         res = SSL_connect(handler->ssl);
-        LOGD2((ZT("_Sock_Write - SSL connect using socket %d returned result: %d, errno: %d (%s)"), handler->base.sock, res, errno, strerror(errno)));
+        fprintf(stderr, "\n_Sock_Write - SSL connect using socket %d returned result: %d, errno: %d (%s)", handler->base.sock, res, errno, strerror(errno));
         if (res > 0)
         {
             /* we are done with accept */
@@ -470,14 +470,14 @@ static MI_Result _Sock_Write(
 
     if (res == 0)
     {
-        LOGW2((ZT("_Sock_Write - SSL socket connection closed")));
+        fprintf(stderr, "\n_Sock_Write - SSL socket connection closed");
         return MI_RESULT_OK;    /* connection closed */
     }
 
     if (res > 0)
     {
         *sizeWritten = res;
-        LOGD2((ZT("_Sock_Write - SSL socket successful write of %d / %u bytes"), res, (unsigned int)buf_size));
+        fprintf(stderr, "\n_Sock_Write - SSL socket successful write of %d / %u bytes", res, (unsigned int)buf_size);
         return MI_RESULT_OK;    /* ok */
     }
 
@@ -485,11 +485,11 @@ static MI_Result _Sock_Write(
     switch (sslError)
     {
     case SSL_ERROR_WANT_WRITE:
-        LOGD2((ZT("_Sock_Write - SSL_write/connect returned WANT_WRITE")));
+        fprintf(stderr, "\n_Sock_Write - SSL_write/connect returned WANT_WRITE");
         return MI_RESULT_WOULD_BLOCK;
 
     case SSL_ERROR_WANT_READ:
-        LOGD2((ZT("_Sock_Write - SSL_write/connect returned WANT_READ")));
+        fprintf(stderr, "\n_Sock_Write - SSL_write/connect returned WANT_READ");
         handler->reverseOperations = MI_TRUE;   /* wait until write is allowed */
         handler->base.mask |= SELECTOR_READ;
         handler->base.mask &= ~SELECTOR_WRITE;
@@ -500,20 +500,20 @@ static MI_Result _Sock_Write(
             EWOULDBLOCK == errno ||
             EINPROGRESS == errno)
         {
-            LOGD2((ZT("_Sock_Write - Returning WOULD_BLOCK. errno: %d (%s)"), errno, strerror(errno)));
+            fprintf(stderr, "\n_Sock_Write - Returning WOULD_BLOCK. errno: %d (%s)", errno, strerror(errno));
             return MI_RESULT_WOULD_BLOCK;
         }
 
-        LOGE2((ZT("_Sock_Write - SSL_write/connect returned unexpected OS error %d (%s)"), errno, strerror(errno)));
+        fprintf(stderr, "\n_Sock_Write - SSL_write/connect returned unexpected OS error %d (%s)", errno, strerror(errno));
         trace_SSLWrite_UnexpectedSysError(errno);
         break;
 
     case SSL_ERROR_SSL:
-        LOGE2((ZT("_Sock_Write - SSL_write/connect returned OpenSSL error %d (%s)"), sslError, ERR_error_string(sslError, NULL)));
+        fprintf(stderr, "\n_Sock_Write - SSL_write/connect returned OpenSSL error %d (%s)", sslError, ERR_error_string(sslError, NULL));
         break;
 
     default:
-        LOGD2((ZT("_Sock_Write - SSL_write/connect returned uncategorized OpenSSL error: %d"), res));
+        fprintf(stderr, "\n_Sock_Write - SSL_write/connect returned uncategorized OpenSSL error: %d", res);
         break;
     }
 
@@ -541,34 +541,34 @@ static Http_CallbackResult _ReadHeader(
     received = 0;
 
     r = _Sock_Read(handler, buf, buf_size, &received);
-    LOGD2((ZT("_ReadHeader - Begin. _Sock_read result: %d (%s), socket: %d, %u / %u bytes read, reverse: %d"), (int)r, mistrerror(r), (int)handler->base.sock, (unsigned int)received, (unsigned int)buf_size, (int)handler->reverseOperations));
+    fprintf(stderr, "\n_ReadHeader - Begin. _Sock_read result: %d (%s), socket: %d, %u / %u bytes read, reverse: %d", (int)r, mistrerror(r), (int)handler->base.sock, (unsigned int)received, (unsigned int)buf_size, (int)handler->reverseOperations);
 
     if (r == MI_RESULT_OK && 0 == received)
     {
-        LOGW2((ZT("_ReadHeader - 0 bytes received without error. Socket closed?")));
+        fprintf(stderr, "\n_ReadHeader - 0 bytes received without error. Socket closed?");
         return PRT_RETURN_FALSE; /* connection closed */
     }
 
     if (r != MI_RESULT_OK && r != MI_RESULT_WOULD_BLOCK)
     {
-        LOGE2((ZT("_ReadHeader - Error %d (%s)"), r, mistrerror(r)));
+        fprintf(stderr, "\n_ReadHeader - Error %d (%s)", r, mistrerror(r));
         return PRT_RETURN_FALSE;
     }
 
     if (received == 0)
     {
-        LOGD2((ZT("_ReadHeader - 0 bytes received. Waiting...")));
+        fprintf(stderr, "\n_ReadHeader - 0 bytes received. Waiting...");
         return PRT_RETURN_TRUE;
     }
 
     handler->receivedSize += received;
 
     /* check header */
-    LOGD2((ZT("_ReadHeader - Received buffer: %s"), buf));
+    fprintf(stderr, "\n_ReadHeader - Received buffer: %s", buf);
 
     /* did we get full header? */
     buf = handler->recvBuffer;
-    LOGD2((ZT("_ReadHeader - Checking for full header...")));
+    fprintf(stderr, "\n_ReadHeader - Checking for full header...");
     for ( index = 3; index < handler->receivedSize; index++ )
     {
         _Analysis_assume_(handler->recvBufferSize > 3);
@@ -576,7 +576,7 @@ static Http_CallbackResult _ReadHeader(
             buf[index-2] == '\n' && buf[index] == '\n' )
         {
             fullHeaderReceived = MI_TRUE;
-            LOGD2((ZT("_ReadHeader - Full header has been received")));
+            fprintf(stderr, "\n_ReadHeader - Full header has been received");
             break;
         }
     }
@@ -585,31 +585,31 @@ static Http_CallbackResult _ReadHeader(
     {
         if (handler->receivedSize <  handler->recvBufferSize)
         {
-            LOGD2((ZT("_ReadHeader - Full header not received. Waiting...")));
+            fprintf(stderr, "\n_ReadHeader - Full header not received. Waiting...");
             return PRT_RETURN_TRUE; /* continue reading */
         }
 
         if (handler->recvBufferSize < MAX_HEADER_SIZE)
         {
-            LOGD2((ZT("_ReadHeader - Reallocating buffer...")));
+            fprintf(stderr, "\n_ReadHeader - Reallocating buffer...");
             buf = PAL_Realloc(handler->recvBuffer, handler->recvBufferSize * 2);
 
             if (!buf)
             {
-                LOGE2((ZT("_ReadHeader - Cannot allocate memory for larger header")));
+                fprintf(stderr, "\n_ReadHeader - Cannot allocate memory for larger header");
                 return PRT_RETURN_FALSE;
             }
 
             handler->recvBufferSize *= 2;
             handler->recvBuffer = buf;
-            LOGD2((ZT("_ReadHeader - Going recursive...")));
+            fprintf(stderr, "\n_ReadHeader - Going recursive...");
             return _ReadHeader(handler);
         }
         else
         {
             /* Http header is too big - drop connection */
             trace_HttpHeaderIsTooBig();
-            LOGE2((ZT("_ReadHeader - HTTP header is too big. Dropping connection")));
+            fprintf(stderr, "\n_ReadHeader - HTTP header is too big. Dropping connection");
             return PRT_RETURN_FALSE;
         }
     }
@@ -625,7 +625,7 @@ static Http_CallbackResult _ReadHeader(
 
     if (!_getRequestLine(handler, &currentLine))
     {
-        LOGE2((ZT("_ReadHeader - Cannot find request line in HTTP header")));
+        fprintf(stderr, "\n_ReadHeader - Cannot find request line in HTTP header");
         return PRT_RETURN_FALSE;
     }
 
@@ -633,7 +633,7 @@ static Http_CallbackResult _ReadHeader(
     {
         if (!_getHeaderField(handler, &currentLine))
         {
-            LOGE2((ZT("_ReadHeader - Cannot find HTTP header field")));
+            fprintf(stderr, "\n_ReadHeader - Cannot find HTTP header field");
             return PRT_RETURN_FALSE;
         }
     }
@@ -650,7 +650,7 @@ static Http_CallbackResult _ReadHeader(
             if (!(*self->callbackOnResponse)(self, self->callbackData, &handler->recvHeaders,
                 handler->contentLength, handler->contentLength == 0, 0))
             {
-                LOGD2((ZT("_ReadHeader - On response callback for chunked data header failed")));
+                fprintf(stderr, "\n_ReadHeader - On response callback for chunked data header failed");
                 return PRT_RETURN_FALSE;
             }
         }
@@ -665,7 +665,7 @@ static Http_CallbackResult _ReadHeader(
     contentSize = (size_t)handler->contentLength;
     if (handler->headVerb)
     {
-        LOGD2((ZT("_ReadHeader - HEAD response received. Download will contain %u bytes"), (unsigned int)contentSize));
+        fprintf(stderr, "\n_ReadHeader - HEAD response received. Download will contain %u bytes", (unsigned int)contentSize);
         contentSize = 0;
     }
 
@@ -684,7 +684,7 @@ static Http_CallbackResult _ReadHeader(
 
     if (handler->recvPage == NULL)
     {
-        LOGD2((ZT("_ReadHeader - Cannot allocate memory for received page")));
+        fprintf(stderr, "\n_ReadHeader - Cannot allocate memory for received page");
         return PRT_RETURN_FALSE;
     }
     ((char*)(handler->recvPage + 1))[contentSize] = '\0';
@@ -698,7 +698,7 @@ static Http_CallbackResult _ReadHeader(
     if (handler->receivedSize > contentSize)
     {
         trace_HttpPayloadIsBiggerThanContentLength();
-        LOGE2((ZT("_ReadHeader - HTTP payload is bigger than content-length (%u > %u bytes)"), (unsigned int)handler->receivedSize, (unsigned int)contentSize));
+        fprintf(stderr, "\n_ReadHeader - HTTP payload is bigger than content-length (%u > %u bytes)", (unsigned int)handler->receivedSize, (unsigned int)contentSize);
         return PRT_RETURN_FALSE;
     }
 
@@ -726,13 +726,13 @@ static Http_CallbackResult _ReadHeader(
                                          handler->contentLength,
                                          handler->contentLength == 0, 0))
         {
-            LOGE2((ZT("_ReadHeader - On response callback for header failed")));
+            fprintf(stderr, "\n_ReadHeader - On response callback for header failed");
             return PRT_RETURN_FALSE;
         }
     }
 
             
-    LOGD2((ZT("_ReadHeader - OK exit")));
+    fprintf(stderr, "\n_ReadHeader - OK exit");
     return rslt;
 }
 
@@ -748,7 +748,7 @@ static Http_CallbackResult _ReadData(
     if (handler->recvingState != RECV_STATE_CONTENT)
         return PRT_RETURN_FALSE;
 
-    LOGD2((ZT("_ReadData - Begin. Head? %d"), handler->headVerb));
+    fprintf(stderr, "\n_ReadData - Begin. Head? %d", handler->headVerb);
     if (!handler->headVerb)
     {
         buf = (char*)(handler->recvPage + 1) + handler->receivedSize;
@@ -758,7 +758,7 @@ static Http_CallbackResult _ReadData(
         if (buf_size != 0)
         {
             r = _Sock_Read(handler, buf, buf_size, &received);
-            LOGD2((ZT("_ReadData - _Sock_Read result: %d (%s), socket: %d, recv: %u"), (int)r, mistrerror(r), (int)handler->base.sock, (unsigned int)received));
+            fprintf(stderr, "\n_ReadData - _Sock_Read result: %d (%s), socket: %d, recv: %u", (int)r, mistrerror(r), (int)handler->base.sock, (unsigned int)received);
 
             if (r == MI_RESULT_OK && 0 == received)
                 return PRT_RETURN_FALSE; /* connection closed */
@@ -768,7 +768,7 @@ static Http_CallbackResult _ReadData(
 
             handler->receivedSize += received;
 
-            LOGD2((ZT("_RequestCallback - Called _ReadData. %d / %d bytes read"), (int)handler->receivedSize, (int)handler->contentLength));
+            fprintf(stderr, "\n_RequestCallback - Called _ReadData. %d / %d bytes read", (int)handler->receivedSize, (int)handler->contentLength);
 
             if (handler->contentLength > 0 && handler->receivedSize < (size_t)handler->contentLength)
             {                           /* assume 500 bytes per millisecond transmission */
@@ -781,7 +781,7 @@ static Http_CallbackResult _ReadData(
         }
 
         /* did we get all data? */
-        LOGD2((ZT("_ReadData - Received size: %d / %d"), (int)handler->receivedSize, (int)handler->contentLength));
+        fprintf(stderr, "\n_ReadData - Received size: %d / %d", (int)handler->receivedSize, (int)handler->contentLength);
         if (handler->receivedSize != (size_t)handler->contentLength)
             return PRT_RETURN_TRUE;
     }
@@ -815,7 +815,7 @@ static Http_CallbackResult _ReadData(
 
     if (handler->recvPage != NULL)
     {
-        LOGD2((ZT("_ReadData - Freeing recvPage. socket: %d"), (int)handler->base.sock));
+        fprintf(stderr, "\n_ReadData - Freeing recvPage. socket: %d", (int)handler->base.sock);
         PAL_Free(handler->recvPage);
     }
 
@@ -823,7 +823,7 @@ static Http_CallbackResult _ReadData(
     handler->receivedSize = 0;
     memset(&handler->recvHeaders, 0, sizeof(handler->recvHeaders));
     handler->recvingState = RECV_STATE_HEADER;
-    LOGD2((ZT("_ReadData - OK exit")));
+    fprintf(stderr, "\n_ReadData - OK exit");
     return PRT_CONTINUE;
 }
 
@@ -1076,7 +1076,7 @@ Http_CallbackResult _WriteClientHeader(
     if (handler->sendingState == RECV_STATE_CONTENT)
         return PRT_CONTINUE;
 
-    LOGD2((ZT("_WriteHeader - Begin")));
+    fprintf(stderr, "\n_WriteHeader - Begin");
 
     buf = ((char*)(handler->sendHeader + 1)) + handler->sentSize;
     buf_size = handler->sendHeader->u.s.size - handler->sentSize;
@@ -1088,17 +1088,17 @@ Http_CallbackResult _WriteClientHeader(
     }
 
     r = _Sock_Write(handler, buf, buf_size, &sent);
-    LOGD2((ZT("_WriteHeader - _Sock_Write result: %d (%s), socket: %d, sent: %d"), (int)r, mistrerror(r), (int)handler->base.sock, (int)sent));
+    fprintf(stderr, "\n_WriteHeader - _Sock_Write result: %d (%s), socket: %d, sent: %d", (int)r, mistrerror(r), (int)handler->base.sock, (int)sent);
 
     if (r == MI_RESULT_OK && 0 == sent)
     {
-        LOGE2((ZT("_WriteHeader - Connection closed")));
+        fprintf(stderr, "\n_WriteHeader - Connection closed");
         return PRT_RETURN_FALSE; /* connection closed */
     }
 
     if (r != MI_RESULT_OK && r != MI_RESULT_WOULD_BLOCK)
     {
-        LOGE2((ZT("_WriteHeader - _Sock_Write returned error: %d (%s)"), (int)r, mistrerror(r)));
+        fprintf(stderr, "\n_WriteHeader - _Sock_Write returned error: %d (%s)", (int)r, mistrerror(r));
         return PRT_RETURN_FALSE;
     }
 
@@ -1108,7 +1108,7 @@ Http_CallbackResult _WriteClientHeader(
     /* did we send all data? */
     if (handler->sentSize != handler->sendHeader->u.s.size)
     {
-        LOGD2((ZT("_WriteHeader - Partial write. %u sent this time, %u / %d written, result: %d (%s)"), (unsigned int)sent, (unsigned int)handler->sentSize, (unsigned int)handler->sendHeader->u.s.size, r, mistrerror(r)));
+        fprintf(stderr, "\n_WriteHeader - Partial write. %u sent this time, %u / %d written, result: %d (%s)", (unsigned int)sent, (unsigned int)handler->sentSize, (unsigned int)handler->sendHeader->u.s.size, r, mistrerror(r));
         return PRT_RETURN_TRUE;
     }
 
@@ -1117,7 +1117,7 @@ Http_CallbackResult _WriteClientHeader(
     handler->sentSize = 0;
     handler->sendingState = RECV_STATE_CONTENT;
 
-    LOGD2((ZT("_WriteHeader - OK exit")));
+    fprintf(stderr, "\n_WriteHeader - OK exit");
     return PRT_CONTINUE;
 }
 
@@ -1128,11 +1128,11 @@ Http_CallbackResult _WriteClientData(
     size_t buf_size, sent;
     MI_Result r;
 
-    LOGD2((ZT("_WriteClientData - Begin")));
+    fprintf(stderr, "\n_WriteClientData - Begin");
     /* are we in the right state? */
     if (handler->sendingState != RECV_STATE_CONTENT)
     {
-        LOGE2((ZT("_WriteClientData - Wrong state. state: %d"), handler->sendingState));
+        fprintf(stderr, "\n_WriteClientData - Wrong state. state: %d", handler->sendingState);
         return PRT_RETURN_FALSE;
     }
 
@@ -1143,7 +1143,7 @@ Http_CallbackResult _WriteClientData(
         handler->base.mask &= ~SELECTOR_WRITE;
         handler->base.mask |= SELECTOR_READ;
 
-        LOGW2((ZT("_WriteClientData - Content is empty. Continuing")));
+        fprintf(stderr, "\n_WriteClientData - Content is empty. Continuing");
         return PRT_CONTINUE;
     }
 
@@ -1152,17 +1152,17 @@ Http_CallbackResult _WriteClientData(
     sent = 0;
 
     r = _Sock_Write(handler, buf, buf_size, &sent);
-    LOGD2((ZT("_WriteClientData - HTTPClient sent %u / %u bytes with result %d (%s)"), (unsigned int)sent, (unsigned int)buf_size, (int)r, mistrerror(r)));
+    fprintf(stderr, "\n_WriteClientData - HTTPClient sent %u / %u bytes with result %d (%s)", (unsigned int)sent, (unsigned int)buf_size, (int)r, mistrerror(r));
 
     if (r == MI_RESULT_OK && 0 == sent)
     {
-        LOGE2((ZT("_WriteClientData exit. Connection closed")));
+        fprintf(stderr, "\n_WriteClientData exit. Connection closed");
         return PRT_RETURN_FALSE; /* connection closed */
     }
 
     if (r != MI_RESULT_OK && r != MI_RESULT_WOULD_BLOCK)
     {
-        LOGE2((ZT("_WriteClientData exit - Error: %d (%s)"), r, mistrerror(r)));
+        fprintf(stderr, "\n_WriteClientData exit - Error: %d (%s)", r, mistrerror(r));
         return PRT_RETURN_FALSE;
     }
 
@@ -1172,7 +1172,7 @@ Http_CallbackResult _WriteClientData(
 
     if (handler->sentSize != handler->sendPage->u.s.size)
     {
-        LOGD2((ZT("_WriteClientData - Exit. Partial write. %u / %u bytes written"), (unsigned int)handler->sentSize, (unsigned int)handler->sendPage->u.s.size));
+        fprintf(stderr, "\n_WriteClientData - Exit. Partial write. %u / %u bytes written", (unsigned int)handler->sentSize, (unsigned int)handler->sendPage->u.s.size);
         return PRT_RETURN_TRUE;
     }
 
@@ -1182,7 +1182,7 @@ Http_CallbackResult _WriteClientData(
     }
 
 
-    LOGD2((ZT("_WriteClientData - %u / %u bytes sent"), (unsigned int)handler->sentSize, (unsigned int)handler->sendPage->u.s.size));
+    fprintf(stderr, "\n_WriteClientData - %u / %u bytes sent", (unsigned int)handler->sentSize, (unsigned int)handler->sendPage->u.s.size);
     PAL_Free(handler->sendPage);
     handler->sendPage = NULL;
     handler->sentSize = 0;
@@ -1190,7 +1190,7 @@ Http_CallbackResult _WriteClientData(
     handler->base.mask &= ~SELECTOR_WRITE;
     handler->base.mask |= SELECTOR_READ;
 
-    LOGD2((ZT("_WriteClientData - OK exit. returning: %d"), PRT_CONTINUE));
+    fprintf(stderr, "\n_WriteClientData - OK exit. returning: %d", PRT_CONTINUE);
 
     return PRT_CONTINUE;
 }
@@ -1272,10 +1272,10 @@ static MI_Boolean _RequestCallback(
     {
         if (!_RequestCallbackRead(handler))
         {
-            LOGE2((ZT("_RequestCallback - RequestCallbackRead failed")));
+            fprintf(stderr, "\n_RequestCallback - RequestCallbackRead failed");
             return MI_FALSE;
         }
-        LOGD2((ZT("_RequestCallback - Called _RequestCallbackRead. %u / %u bytes read"), (unsigned int)handler->receivedSize, handler->recvPage == NULL ? 0 : (unsigned int)handler->recvPage->u.s.size));
+        fprintf(stderr, "\n_RequestCallback - Called _RequestCallbackRead. %u / %u bytes read", (unsigned int)handler->receivedSize, handler->recvPage == NULL ? 0 : (unsigned int)handler->recvPage->u.s.size);
     }
 
     if (((mask & SELECTOR_WRITE) != 0 && !handler->reverseOperations) ||
@@ -1300,30 +1300,30 @@ static MI_Boolean _RequestCallback(
         {
             if (!_RequestCallbackWrite(handler))
             {
-                LOGE2((ZT("_RequestCallback - _RequestCallbackWrite failed")));
+                fprintf(stderr, "\n_RequestCallback - _RequestCallbackWrite failed");
                 return MI_FALSE;
             }
-            LOGD2((ZT("_RequestCallback - Called _RequestCallbackWrite. %u / %u bytes sent"),
-                          (unsigned int)handler->sentSize, handler->sendPage == NULL ? 0 : (unsigned int)handler->sendPage->u.s.size));
+            fprintf(stderr, "\n_RequestCallback - Called _RequestCallbackWrite. %u / %u bytes sent",
+                          (unsigned int)handler->sentSize, handler->sendPage == NULL ? 0 : (unsigned int)handler->sendPage->u.s.size);
             while (handler->sendPage != NULL && handler->sentSize < handler->sendPage->u.s.size)
             {                               /* assume 500 bytes per millisecond transmission */
                                             /* wait after to avoid spinning too much on _WriteData */
                 /* unsigned int bytesLeft = (unsigned int)handler->sendPage->u.s.size - (unsigned int)handler->sentSize; */
                 /* unsigned long msec = (unsigned long)(bytesLeft / 500 + 1); */
 
-                LOGD2((ZT("_RequestCallback - Called _WriteClientData. %u / %u bytes sent"), 
-                              (unsigned int)handler->sentSize, handler->sendPage == NULL ? 0 : (unsigned int)handler->sendPage->u.s.size));
+                fprintf(stderr, "\n_RequestCallback - Called _WriteClientData. %u / %u bytes sent", 
+                              (unsigned int)handler->sentSize, handler->sendPage == NULL ? 0 : (unsigned int)handler->sendPage->u.s.size);
                 if (_WriteClientData(handler) == MI_FALSE)
                 {
-                    LOGE2((ZT("_RequestCallback - _WriteClientData failed")));
+                    fprintf(stderr, "\n_RequestCallback - _WriteClientData failed");
                     return MI_FALSE;
                 }
-                LOGD2((ZT("_RequestCallback - Called _WriteClientData. %u bytes written, %u bytes left"), 
-                              (unsigned int)handler->sentSize, handler->sendPage == NULL ? 0 : (unsigned int)handler->sendPage->u.s.size));
+                fprintf(stderr, "\n_RequestCallback - Called _WriteClientData. %u bytes written, %u bytes left", 
+                              (unsigned int)handler->sentSize, handler->sendPage == NULL ? 0 : (unsigned int)handler->sendPage->u.s.size);
                 Sleep_Milliseconds(10);
             }
-            LOGD2((ZT("_RequestCallback - Called _RequestCallbackWrite. %u / %u bytes sent"), 
-                              (unsigned int)handler->sentSize, handler->sendPage == NULL ? 0 : (unsigned int)handler->sendPage->u.s.size));
+            fprintf(stderr, "\n_RequestCallback - Called _RequestCallbackWrite. %u / %u bytes sent", 
+                              (unsigned int)handler->sentSize, handler->sendPage == NULL ? 0 : (unsigned int)handler->sendPage->u.s.size);
         }
     }
 
@@ -1341,7 +1341,7 @@ static MI_Boolean _RequestCallback(
             handler->recvHeaders.httpError = 408;
             handler->status = MI_RESULT_TIME_OUT;
         }
-        LOGE2((ZT("_RequestCallback - Timed out. socket: %d, result: %d (%s)"), handler->base.sock, handler->status, mistrerror(handler->status)));
+        fprintf(stderr, "\n_RequestCallback - Timed out. socket: %d, result: %d (%s)", handler->base.sock, handler->status, mistrerror(handler->status));
         return MI_FALSE;
     }
 
@@ -1364,7 +1364,7 @@ static MI_Boolean _RequestCallback(
 
         if (handler == NULL)
         {
-            LOGE2((ZT("_RequestCallback - The handler object was free'd under us!")));
+            fprintf(stderr, "\n_RequestCallback - The handler object was free'd under us!");
             return MI_TRUE;
         }
 
@@ -1442,7 +1442,7 @@ static MI_Result _CreateSSLContext(
     SSL_CTX* sslContext = SSL_CTX_new(SSLv23_method());
     if (sslContext == NULL)
     {
-        LOGE2((ZT("_CreateSSLContext - Cannot create SSL context")));
+        fprintf(stderr, "\n_CreateSSLContext - Cannot create SSL context");
         trace_SSL_CannotCreateContext();
         return MI_RESULT_FAILED;
     }
@@ -1458,7 +1458,7 @@ static MI_Result _CreateSSLContext(
         */
         if (SSL_CTX_load_verify_locations(sslContext, NULL, trustedCertsDir) < 0)
         {
-            LOGE2((ZT("_CreateSSLContext - Cannot set directory containing trusted certificate(s) to %s"), trustedCertsDir));
+            fprintf(stderr, "\n_CreateSSLContext - Cannot set directory containing trusted certificate(s) to %s", trustedCertsDir);
             trace_SSL_BadTrustDir(trustedCertsDir);
         }
         SSL_CTX_set_verify(sslContext, SSL_VERIFY_PEER, _ctxVerify);
@@ -1472,7 +1472,7 @@ static MI_Result _CreateSSLContext(
         int err;
 
         /* load the specified client certificates */
-        LOGD2((ZT("_CreateSSLContext - Loading server certificate from: %s"), certFile));
+        fprintf(stderr, "\n_CreateSSLContext - Loading server certificate from: %s", certFile);
 
         err = SSL_CTX_use_certificate_file(sslContext,
                                            certFile,
@@ -1483,8 +1483,8 @@ static MI_Result _CreateSSLContext(
             unsigned long error = ERR_peek_last_error();
 #endif
 
-            LOGE2((ZT("_CreateSSLContext - No client certificate found in %s"), certFile));
-            LOGE2((ZT("_CreateSSLContext - OpenSSL Error 0x%lX (%s) in SSL_CTX_use_certificate_file"), error, sslstrerror(error)));
+            fprintf(stderr, "\n_CreateSSLContext - No client certificate found in %s", certFile);
+            fprintf(stderr, "\n_CreateSSLContext - OpenSSL Error 0x%lX (%s) in SSL_CTX_use_certificate_file", error, sslstrerror(error));
             SSL_CTX_free(sslContext);
             sslContext = NULL;
             return MI_RESULT_FAILED;
@@ -1493,7 +1493,7 @@ static MI_Result _CreateSSLContext(
         if (privateKeyFile != NULL && *privateKeyFile != '\0')
         {
             /* load the specified private key */
-            LOGD2((ZT("_CreateSSLContext - SSL Loading client private key from: %s"), privateKeyFile));
+            fprintf(stderr, "\n_CreateSSLContext - SSL Loading client private key from: %s", privateKeyFile);
 
             err = SSL_CTX_use_RSAPrivateKey_file(sslContext,
                                                  privateKeyFile,
@@ -1503,8 +1503,8 @@ static MI_Result _CreateSSLContext(
 #if defined(ENABLE_TRACING)
                 unsigned long error = ERR_peek_last_error();
 #endif
-                LOGE2((ZT("_CreateSSLContext - Invalid private key found in %s"), privateKeyFile));
-                LOGE2((ZT("_CreateSSLContext - OpenSSL error 0x%lX (%s) in SSL_CTX_use_PrivateKey_file"), error, sslstrerror(error)));
+                fprintf(stderr, "\n_CreateSSLContext - Invalid private key found in %s", privateKeyFile);
+                fprintf(stderr, "\n_CreateSSLContext - OpenSSL error 0x%lX (%s) in SSL_CTX_use_PrivateKey_file", error, sslstrerror(error));
                 SSL_CTX_free(sslContext);
                 sslContext = NULL;
                 return MI_RESULT_FAILED;
@@ -1524,13 +1524,13 @@ static MI_Result _CreateSocketAndConnect(
 {
     MI_Result r;
 
-    LOGD2((ZT("_CreateSocketAndConnect - Begin")));
+    fprintf(stderr, "\n_CreateSocketAndConnect - Begin");
 
     /* Create client socket. */
     r = Sock_Create(s, addr->is_ipv6);
     if (r != MI_RESULT_OK)
     {
-        LOGE2((ZT("_CreateSocketAndConnect - Sock_Create failed. result: %d (%s)"), r, mistrerror(r)));
+        fprintf(stderr, "\n_CreateSocketAndConnect - Sock_Create failed. result: %d (%s)", r, mistrerror(r));
         return r;
     }
 
@@ -1538,7 +1538,7 @@ static MI_Result _CreateSocketAndConnect(
     r = Sock_SetBlocking(*s, MI_FALSE);
     if (r != MI_RESULT_OK)
     {
-        LOGE2((ZT("_CreateSocketAndConnect - Sock_SetBlocking failed. result: %d (%s)"), r, mistrerror(r)));
+        fprintf(stderr, "\n_CreateSocketAndConnect - Sock_SetBlocking failed. result: %d (%s)", r, mistrerror(r));
         return r;
     }
 
@@ -1546,11 +1546,11 @@ static MI_Result _CreateSocketAndConnect(
     r = Sock_Connect(*s, addr);
     if (r != MI_RESULT_OK)
     {
-        LOGE2((ZT("_CreateSocketAndConnect - Sock_Connect failed. result: %d (%s)"), r, mistrerror(r)));
+        fprintf(stderr, "\n_CreateSocketAndConnect - Sock_Connect failed. result: %d (%s)", r, mistrerror(r));
         return r;
     }
 
-    LOGD2((ZT("_CreateSocketAndConnect - OK exit")));
+    fprintf(stderr, "\n_CreateSocketAndConnect - OK exit");
 
     return MI_RESULT_WOULD_BLOCK;
 }
@@ -1567,12 +1567,12 @@ static MI_Result _CreateConnectorSocket(
     HttpClient_SR_SocketData* h;
     MI_Uint64 currentTimeUsec;
 
-    LOGD2((ZT("_CreateConnectorSocket - Begin. host: %s, port: %d, secure? %d"), host, port, secure));
+    fprintf(stderr, "\n_CreateConnectorSocket - Begin. host: %s, port: %d, secure? %d", host, port, secure);
 
     /* timeout calculation */
     if (PAL_Time(&currentTimeUsec) != PAL_TRUE)
     {
-        LOGE2((ZT("_CreateConnectorSocket - PAL_Time failed")));
+        fprintf(stderr, "\n_CreateConnectorSocket - PAL_Time failed");
         return MI_RESULT_FAILED;
     }
 
@@ -1585,7 +1585,7 @@ static MI_Result _CreateConnectorSocket(
     r = Addr_Init(&addr, host, port, MI_FALSE);
     if (r != MI_RESULT_OK)
     {
-        LOGE2((ZT("_CreateConnectorSocket - Addr_Init failed. result: %d (%s)"), r, mistrerror(r)));
+        fprintf(stderr, "\n_CreateConnectorSocket - Addr_Init failed. result: %d (%s)", r, mistrerror(r));
         return r;
     }
 
@@ -1597,7 +1597,7 @@ static MI_Result _CreateConnectorSocket(
 
         Sock_Close(s);
 
-        LOGW2((ZT("_CreateConnectorSocket - _CreateSocketAndConnect of primary address failed. result: %d (%s)"), r, mistrerror(r)));
+        fprintf(stderr, "\n_CreateConnectorSocket - _CreateSocketAndConnect of primary address failed. result: %d (%s)", r, mistrerror(r));
 
         /* Initialize secondary address */
         r2 = Addr_Init(&addr, host, port, MI_TRUE);
@@ -1608,7 +1608,7 @@ static MI_Result _CreateConnectorSocket(
         {
             Sock_Close(s);
 
-            LOGE2((ZT("_CreateConnectorSocket - Addr_Init failed. result: %d (%s)"), r, mistrerror(r)));
+            fprintf(stderr, "\n_CreateConnectorSocket - Addr_Init failed. result: %d (%s)", r, mistrerror(r));
 
             return r;                   /* on error, return original failure */
         }
@@ -1621,7 +1621,7 @@ static MI_Result _CreateConnectorSocket(
     if (h == NULL)
     {
         Sock_Close(s);
-        LOGE2((ZT("_CreateConnectorSocket - calloc failed")));
+        fprintf(stderr, "\n_CreateConnectorSocket - calloc failed");
         return MI_RESULT_FAILED;
     }
     h->hostAddr = addr;
@@ -1637,7 +1637,7 @@ static MI_Result _CreateConnectorSocket(
     {
         PAL_Free(h);
         Sock_Close(s);
-        LOGE2((ZT("_CreateConnectorSocket - calloc failed")));
+        fprintf(stderr, "\n_CreateConnectorSocket - calloc failed");
         return MI_RESULT_FAILED;
     }
 
@@ -1658,7 +1658,7 @@ static MI_Result _CreateConnectorSocket(
 
         if (!h->ssl)
         {
-            LOGW2((ZT("_CreateConnectorSocket - SSL_new failed")));
+            fprintf(stderr, "\n_CreateConnectorSocket - SSL_new failed");
             trace_SSLNew_Failed();
             PAL_Free(h);
             Sock_Close(s);
@@ -1668,7 +1668,7 @@ static MI_Result _CreateConnectorSocket(
         Sock_SetBlocking(s, MI_TRUE);
         if (!(SSL_set_fd(h->ssl, s) ))
         {
-            LOGW2((ZT("_CreateConnectorSocket - SSL_set_fd failed")));
+            fprintf(stderr, "\n_CreateConnectorSocket - SSL_set_fd failed");
             trace_SSL_setfd_Failed();
             SSL_free(h->ssl);
             PAL_Free(h);
@@ -1684,7 +1684,7 @@ static MI_Result _CreateConnectorSocket(
 
     if (r != MI_RESULT_OK)
     {
-        LOGE2((ZT("_CreateConnectorSocket - Selector_AddHandler failed with error: %d (%s)"), (int)r, mistrerror(r)));
+        fprintf(stderr, "\n_CreateConnectorSocket - Selector_AddHandler failed with error: %d (%s)", (int)r, mistrerror(r));
         trace_SelectorAddHandler_Failed();
         if (secure)
             SSL_free(h->ssl);
@@ -1695,7 +1695,7 @@ static MI_Result _CreateConnectorSocket(
 
     self->connector = h;
 
-    LOGD2((ZT("_CreateConnectorSocket - OK exit. socket: %d, secure: %d, timeout: %s"), h->base.sock, secure, FmtInterval(h->base.fireTimeoutAt - currentTimeUsec)));
+    fprintf(stderr, "\n_CreateConnectorSocket - OK exit. socket: %d, secure: %d, timeout: %s", h->base.sock, secure, FmtInterval(h->base.fireTimeoutAt - currentTimeUsec));
 
     return MI_RESULT_OK;
 }
@@ -1739,7 +1739,7 @@ static MI_Result _New_Http(
         if (Selector_Init(&self->internalSelector) != MI_RESULT_OK)
         {
             PAL_Free(self);
-            LOGE2((ZT("_NewHttp - Selector_Init failed")));
+            fprintf(stderr, "\n_NewHttp - Selector_Init failed");
             return MI_RESULT_FAILED;
         }
         self->selector = &self->internalSelector;
@@ -2020,7 +2020,7 @@ MI_Result _UnpackDestinationOptions(
           != MI_RESULT_OK)
     {
         // Log here
-        LOGE2((ZT("_UnpackDestinationOptions: No credentials available.")));
+        fprintf(stderr, "\n_UnpackDestinationOptions: No credentials available.");
         result = MI_RESULT_INVALID_PARAMETER;
         goto Done;
     }         
@@ -2060,7 +2060,7 @@ MI_Result _UnpackDestinationOptions(
     if (method == AUTH_METHOD_UNSUPPORTED)
     {
         // Log here
-        LOGE2((ZT("_UnpackDestinationOptions: Authorisation type (%s) is not supported."), userCredentials.authenticationType));
+        fprintf(stderr, "\n_UnpackDestinationOptions: Authorisation type (%s) is not supported.", userCredentials.authenticationType);
         result = MI_RESULT_ACCESS_DENIED;
         goto Done;
     }         
@@ -2079,7 +2079,7 @@ MI_Result _UnpackDestinationOptions(
     }
     else {
         if (method == AUTH_METHOD_BASIC) {
-            LOGE2((ZT("_UnpackDestinationOptions: Authorisation type Basic requires username.")));
+            fprintf(stderr, "\n_UnpackDestinationOptions: Authorisation type Basic requires username.");
             result = MI_RESULT_ACCESS_DENIED;
             goto Done;
         }
@@ -2096,7 +2096,7 @@ MI_Result _UnpackDestinationOptions(
     if (MI_DestinationOptions_GetCredentialsPasswordAt(pDestOptions, 0, (const MI_Char **)&optionName, NULL, 0, &password_len, NULL) != MI_RESULT_OK)
     {
         if (method == AUTH_METHOD_BASIC) {
-            LOGE2((ZT("_UnpackDestinationOptions: Authorisation type requires password.")));
+            fprintf(stderr, "\n_UnpackDestinationOptions: Authorisation type requires password.");
             result = MI_RESULT_ACCESS_DENIED;
             goto Done;
         }
@@ -2104,7 +2104,7 @@ MI_Result _UnpackDestinationOptions(
 
     if (password_len <= 0) {
         if (method == AUTH_METHOD_BASIC) {
-            LOGE2((ZT("_UnpackDestinationOptions: Authorisation type requires password.")));
+            fprintf(stderr, "\n_UnpackDestinationOptions: Authorisation type requires password.");
             result = MI_RESULT_ACCESS_DENIED;
             goto Done;
         }
@@ -2330,7 +2330,7 @@ MI_Result HttpClient_New_Connector2(
 
     if (MI_RESULT_OK != r)
     {
-        LOGE2((ZT("HttpClient_New_Connector - _New_Http failed. result: %d (%s)"), r, mistrerror(r)));
+        fprintf(stderr, "\nHttpClient_New_Connector - _New_Http failed. result: %d (%s)", r, mistrerror(r));
         return r;
     }
     self = *selfOut;
@@ -2355,7 +2355,7 @@ MI_Result HttpClient_New_Connector2(
         {
             HttpClient_Delete(self);
             *selfOut = NULL;
-            LOGE2((ZT("HttpClient_New_Connector - _CreateSSLContext failed. result: %d (%s)"), r, mistrerror(r)));
+            fprintf(stderr, "\nHttpClient_New_Connector - _CreateSSLContext failed. result: %d (%s)", r, mistrerror(r));
             goto Cleanup;
         }
     }
@@ -2370,7 +2370,7 @@ MI_Result HttpClient_New_Connector2(
         if (r != MI_RESULT_OK)
         {
             HttpClient_Delete(self);
-            LOGE2((ZT("HttpClient_New_Connector - _CreateConnectorSocket failed. result: %d (%s)"), r, mistrerror(r)));
+            fprintf(stderr, "\nHttpClient_New_Connector - _CreateConnectorSocket failed. result: %d (%s)", r, mistrerror(r));
             goto Cleanup;
         }
 
@@ -2380,7 +2380,7 @@ MI_Result HttpClient_New_Connector2(
         if (!self->connector)
         {
             HttpClient_Delete(self);
-            LOGE2((ZT("HttpClient_New_Connector - _CreateConnectorSocket did not initialise.")));
+            fprintf(stderr, "\nHttpClient_New_Connector - _CreateConnectorSocket did not initialise.");
             goto Cleanup;
         }
 
@@ -2447,7 +2447,7 @@ MI_Result HttpClient_Delete(
     /* Check magic number */
     if (self->magic != _MAGIC)
     {
-        LOGE2((ZT("HttpClient_Delete - Bad magic number")));
+        fprintf(stderr, "\nHttpClient_Delete - Bad magic number");
         return MI_RESULT_INVALID_PARAMETER;
     }
 
@@ -2520,16 +2520,16 @@ MI_Result HttpClient_StartRequest(
    MI_Result rtnval = MI_RESULT_OK;
 
    static const char CONTENT_TYPE_HDR[]   = "Content-Type:";
-   const size_t      CONTENT_TYPE_HDR_LEN = MI_COUNT(CONTENT_TYPE_HDR);
+   const size_t      CONTENT_TYPE_HDR_LEN = MI_COUNT(CONTENT_TYPE_HDR) - 1;
    static const char AUTH_HDR[]           = "Authorization:";
-   const size_t      AUTH_HDR_LEN         = MI_COUNT(AUTH_HDR);
+   const size_t      AUTH_HDR_LEN         = MI_COUNT(AUTH_HDR) - 1;
 
    if (headers)
    {
-       extra_headers.size = headers->size;
-       extra_headers.data = (headers->size != 0) ? (const char **)PAL_Malloc(sizeof(char *)*extra_headers->size) : NULL;
+       extra_headers.data = (headers->size != 0) ? (const char **)PAL_Malloc(sizeof(char *) * headers->size) : NULL;
 
        int i = 0;
+       int j = 0;
        for (i = 0; i < headers->size; i++ ) 
        {
            if (Strncasecmp(headers->data[i], CONTENT_TYPE_HDR, CONTENT_TYPE_HDR_LEN) == 0)
@@ -2542,9 +2542,12 @@ MI_Result HttpClient_StartRequest(
            }
            else 
            {
+	       extra_headers.data[j] = (char *)headers->data[i];
+               j++;
            }
-           if (content_type && auth_header) break;
        }
+
+       extra_headers.size = j;
    }
 
    if (extra_headers.size > 0 )
@@ -2593,7 +2596,7 @@ MI_Result HttpClient_StartRequestV2(
 {
     Http_CallbackResult ret;
     const char *auth_header = NULL;
-    LOGD2((ZT("HttpClient_StartRequest - Begin. verb: %s, URI: %s"), verb, uri));
+    fprintf(stderr, "\nHttpClient_StartRequest - Begin. verb: %s, URI: %s", verb, uri);
 
     /* check params */
     if (!self || !uri)
@@ -2606,14 +2609,14 @@ MI_Result HttpClient_StartRequestV2(
 
     if (self->magic != _MAGIC)
     {
-        LOGE2((ZT("HttpClient_StartRequest - Bad magic number")));
+        fprintf(stderr, "\nHttpClient_StartRequest - Bad magic number");
         trace_StartRequest_InvalidMagic();
         return MI_RESULT_INVALID_PARAMETER;
     }
 
     if (self->connector == NULL)
     {
-        LOGE2((ZT("HttpClient_StartRequest - Connection is not open")));
+        fprintf(stderr, "\nHttpClient_StartRequest - Connection is not open");
         trace_StartRequest_ConnectionClosed();
         return MI_RESULT_FAILED;
     }

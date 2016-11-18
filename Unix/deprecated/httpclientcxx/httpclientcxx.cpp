@@ -20,15 +20,9 @@
 #include <http/httpclient.h>
 #include <pal/thread.h>
 
-//#define ENABLE_TRACING 1
-#if defined ENABLE_TRACING
-# define TRACING_LEVEL 3
-# include <deprecated/logging/logging.h>
-#else
-# define LOGD2(s)
-# define LOGE2(s)
-# define LOGW2(s)
-#endif
+#define ENABLE_TRACING 1
+#define TRACING_LEVEL 5
+#include <deprecated/logging/logging.h>
 
 static sem_t            s_connectionSemaphore;
 static bool             s_connectionSemaphoreInitialized = false;
@@ -262,7 +256,7 @@ private:
         _msg =  __Message_New(NoOpReqTag, sizeof (NoOpReq), 0, 0, CALLSITE);
         _msg->argPtr = PtrToUint64(this);
         *((void**)&_msg->clientId) = this;
-        LOGD2((ZT("NotifyItem::InitMsg - argument is this: %p --> 0x%lX"), this, (unsigned long)_msg->argPtr));
+        fprintf(stderr, "NotifyItem::InitMsg - argument is this: %p --> 0x%lX\n", this, (unsigned long)_msg->argPtr);
     }
 };
 
@@ -411,38 +405,42 @@ IOThread::~IOThread()
 
 bool IOThread::Start()
 {
-    LOGD2((ZT("IOThread::Start - Begin. Initializing selector")));
+    fprintf(stderr, "IOThread::Start - Begin. Initializing selector\n");
     if (MI_RESULT_OK != Selector_Init(&_selector))
         return false;
 
     Selector_SetAllowEmptyFlag(&_selector, MI_TRUE);
 
-    LOGD2((ZT("IOThread::Start - Creating Thread")));
+    fprintf(stderr, "IOThread::Start - Creating Thread\n");
     if (Thread_CreateJoinable(_th, _proc, NULL, this) != MI_RESULT_OK)
     {
-        LOGE2((ZT("IOThread::Start - Creation of thread failed")));
+        fprintf(stderr, "IOThread::Start - Creation of thread failed\n");
         return false;
     }
 
-    LOGD2((ZT("IOThread::Start - OK exit")));
+    fprintf(stderr, "IOThread::Start - OK exit\n");
     return true;
 }
 
 bool IOThread::PostItem(NotifyItem* item)
 {
 #ifdef ENABLE_TRACING
-    LOGD2((ZT("IoThread::PostItem - Posting item: %d (%s)"), item->_type, notifyitemtypestr(item->_type)));
+    fprintf(stderr, "IoThread::PostItem - Posting item: %d (%s)\n", item->_type, notifyitemtypestr(item->_type));
     if (item->_type == NotifyItem::CONNECT)
     {
-        LOGD2((ZT("PostItem - CONNECT. host: %s, port %d"), item->_host.c_str(), item->_port));
+        fprintf(stderr, "PostItem - CONNECT. host: %s, port %d\n", item->_host.c_str(), item->_port);
     }
     if (item->_type == NotifyItem::START_REQUEST)
     {
-        LOGD2((ZT("PostItem - START_REQUEST. verb: %s, URI: %s"), item->_verb.c_str(), item->_uri.c_str()));
+        fprintf(stderr, "PostItem - START_REQUEST. verb: %s, URI: %s\n", item->_verb.c_str(), item->_uri.c_str());
     }
     if (item->_type == NotifyItem::SET_TIMEOUT)
     {
-        LOGD2((ZT("PostItem - SET_TIMEOUT. timeout: %lu us"), (unsigned long)item->_timeout));
+        fprintf(stderr, "PostItem - SET_TIMEOUT. timeout: %lu us\n", (unsigned long)item->_timeout);
+    }
+    if (item->_type == NotifyItem::DELETE_HTTP)
+    {
+        fprintf(stderr, "PostItem - DELETE_HTTP\n");
     }
 #endif
 
@@ -469,21 +467,21 @@ void IOThread::ConnectTh(NotifyItem* item)
     if (res != MI_RESULT_OK)
     {
         *item->_connectWorked = false;
-        LOGE2((ZT("IOThread::ConnectTh - HTTP client connect failed with result: %d (%s)"), (int)res, mistrerror(res)));
+        fprintf(stderr, "IOThread::ConnectTh - HTTP client connect failed with result: %d (%s)\n", (int)res, mistrerror(res));
         item->_rep->_callback->OnStatus(httpclient::FAILED);
         item->_rep->_notify = true;
     }
     else
     {
         // item->_rep->_callback->OnStatus(httpclient::OKAY);
-        LOGD2((ZT("IOThread::ConnectTh - HTTP client connect succeeded")));
+        fprintf(stderr, "IOThread::ConnectTh - HTTP client connect succeeded\n");
         *item->_connectWorked = true;
     }
 
     *item->_connectComplete = true;
     HttpClient_SetTimeout(item->_rep->_httpClient, (MI_Uint64)item->_rep->_timeoutMS * 1000);
     sem_post(&s_connectionSemaphore);
-    LOGD2((ZT("IOThread::ConnectTh - HttpClient_New_Connector returned result: %d (%s), timeout: %d ms"), (int)res, mistrerror(res), item->_rep->_timeoutMS));
+    fprintf(stderr, "IOThread::ConnectTh - HttpClient_New_Connector returned result: %d (%s), timeout: %d ms\n", (int)res, mistrerror(res), item->_rep->_timeoutMS);
     *item->_connectComplete = true;
 }
 
@@ -530,11 +528,15 @@ void IOThread::StartRequestTh(NotifyItem* item)
         c_headers.data = &headers_pointers[0];
     }
 
+    headers_pointers.push_back("Authorization: None");
+    c_headers.size = headers_pointers.size();
+    c_headers.data = &headers_pointers[0];
+
     MI_Result res = HttpClient_StartRequest(
         item->_rep->_httpClient,
         c_verb,
         item->_uri.c_str(),
-        &c_headers,
+        (c_headers.size != 0) ? &c_headers : NULL,
         &c_data);
 
     if (c_data != NULL)
@@ -545,31 +547,31 @@ void IOThread::StartRequestTh(NotifyItem* item)
 
     if (res != MI_RESULT_OK)
     {
-        LOGE2((ZT("IOThread::_StartRequestTh - HTTP client request failed with error: %d (%s)"), (int)res, mistrerror(res)));
+        fprintf(stderr, "IOThread::_StartRequestTh - HTTP client request failed with error: %d (%s)\n", (int)res, mistrerror(res));
         item->_rep->_callback->OnStatus(res == MI_RESULT_TIME_OUT ? httpclient::TIMEOUT : httpclient::FAILED);
     }
     else
     {
-        LOGD2((ZT("IOThread::_StartRequestTh - HTTP client request succeeded")));
+        fprintf(stderr, "IOThread::_StartRequestTh - HTTP client request succeeded\n");
         item->_rep->_callback->OnStatus(httpclient::OKAY);
     }
 }
 
 void IOThread::DeleteHttpTh(NotifyItem* item)
 {
-    LOGD2((ZT("_DeleteHttpTh - Deleting HTTP thread")));
+    fprintf(stderr, "_DeleteHttpTh - Deleting HTTP thread\n");
 
     // Clean up here as the first thread is not waiting for any signal for this to be completed.
     HttpClient_Delete(item->_rep->_httpClient);
     item->_rep->_httpClient = NULL;
     item->_rep->_destroyed = true;
 
-    LOGD2((ZT("_DeleteHttpTh - Done")));
+    fprintf(stderr, "_DeleteHttpTh - Done\n");
 }
 
 void IOThread::SetTimeoutTh(NotifyItem* item)
 {
-    LOGD2((ZT("IOThread::SetTimeoutTh - Item: %p, rep: %p, timeout: %lu us"), item, item->_rep, (unsigned long)item->_rep->_timeoutMS * 1000));
+    fprintf(stderr, "IOThread::SetTimeoutTh - Item: %p, rep: %p, timeout: %lu us\n", item, item->_rep, (unsigned long)item->_rep->_timeoutMS * 1000);
     HttpClient_SetTimeout(item->_rep->_httpClient, (MI_Uint64)item->_rep->_timeoutMS * 1000);
 }
 
@@ -603,11 +605,12 @@ static IOThreadHandle _GetThreadObj()
 
 HttpClient::~HttpClient()
 {
-    LOGD2((ZT("HttpClient::~HttpClient - Begin")));
+    fprintf(stderr, "HttpClient::~HttpClient - Begin\n");
 
     pthread_mutex_lock(&m_httpClientLock);
 
     NotifyItem* item = new NotifyItem(_rep);
+    fprintf(stderr, "~HttpClient NotifyItem\n");
 
     if (_rep != NULL)
     {
@@ -620,7 +623,7 @@ HttpClient::~HttpClient()
         delete _rep;
     }
     pthread_mutex_unlock(&m_httpClientLock);
-    LOGD2((ZT("HttpClient::~HttpClient finished")));
+    fprintf(stderr, "HttpClient::~HttpClient finished\n");
 }
 
 HttpClient::HttpClient(
@@ -631,7 +634,7 @@ HttpClient::HttpClient(
 
     _rep = new HttpClientRep(callback);
     pthread_mutex_unlock(&m_httpClientLock);
-    LOGD2((ZT("HttpClient::HttpClient finished")));
+    fprintf(stderr, "HttpClient::HttpClient finished\n");
 }
 
 Result HttpClient::Connect(
@@ -656,15 +659,15 @@ Result HttpClient::Connect(
     bool connectWorked = false;
     bool connectComplete = false;
 
-    LOGD2((ZT("HttpClient::Connect - host: %s, port: %u"), host, (unsigned int)port));
+    fprintf(stderr, "HttpClient::Connect - host: %s, port: %u\n", host, (unsigned int)port);
     if (secure)
     {
-        LOGD2((ZT("HttpClient::Connect - trustedCertsDir: %s, certFile: %s, privateKeyFile: %s"), trustedCertsDir, certFile, privateKeyFile));
+        fprintf(stderr, "HttpClient::Connect - trustedCertsDir: %s, certFile: %s, privateKeyFile: %s\n", trustedCertsDir, certFile, privateKeyFile);
     }
 
     std::string EncodedHost(EscapeUriString(host, false));
 
-    LOGD2((ZT("HttpClient::Connect - Beginning connection")));
+    fprintf(stderr, "HttpClient::Connect - Beginning connection\n");
 
     NotifyItem* item = new NotifyItem(_rep,
                                       EncodedHost.empty() ? "" : EncodedHost.c_str(),
@@ -677,48 +680,50 @@ Result HttpClient::Connect(
                                       &connectWorked,
                                       &connectComplete);
 
+    fprintf(stderr, "Connect NotifyItem\n");
+
     if (!_rep->_th->PostItem(item))
     {
         delete item;
-        LOGE2((ZT("HttpClient::Connect - PostItem failed")));
+        fprintf(stderr, "HttpClient::Connect - PostItem failed\n");
         return httpclient::FAILED;
     }
 
 #if defined(__hpux) || defined(macos) || defined(__SunOS_5_9)   // these OSs don't have sem_timedwait
     // Yeah, sure, this is async.  You betcha.  That's why we're going to wait
     // here until the connect is complete.
-    LOGD2((ZT("HttpClient::Connect - Beginning wait for connection complete semaphore")));
+    fprintf(stderr, "HttpClient::Connect - Beginning wait for connection complete semaphore\n");
     while (!connectComplete)
     {
-        LOGD2((ZT("HttpClient::Connect - Waiting for connection complete semaphore")));
+        fprintf(stderr, "HttpClient::Connect - Waiting for connection complete semaphore\n");
         sem_wait(&s_connectionSemaphore);
-        LOGD2((ZT("HttpClient::Connect - Connection complete semaphore received.  connectComplete was %s"), connectComplete ? "True" : "False"));
+        fprintf(stderr, "HttpClient::Connect - Connection complete semaphore received.  connectComplete was %s\n", connectComplete ? "True" : "False");
     }
 #else
     // Wait 30 seconds until the connect is complete or there was an error.
     struct timespec timeout_time;
     time_t current_time = time(NULL);
 
-    LOGD2((ZT("HttpClient::Connect - Waiting for connection complete semaphore")));
+    fprintf(stderr, "HttpClient::Connect - Waiting for connection complete semaphore\n");
     timeout_time.tv_sec = current_time + 31;   // 30 - 31 seconds, since we don't compute tv_nsec.
     timeout_time.tv_nsec = 0;
     if (sem_timedwait(&s_connectionSemaphore, &timeout_time) < 0)
     {                                   // in most cases, errno here will be ETIMEDOUT
-        LOGD2((ZT("HttpClient::Connect - Connect process error: %d (%s)"), errno, strerror(errno)));
+        fprintf(stderr, "HttpClient::Connect - Connect process error: %d (%s)\n", errno, strerror(errno));
     }
 #endif
-    LOGD2((ZT("HttpClient::Connect - Connection request done. connectComplete was %d, connectWorked was: %d"), connectComplete, connectComplete));
+    fprintf(stderr, "HttpClient::Connect - Connection request done. connectComplete was %d, connectWorked was: %d\n", connectComplete, connectComplete);
     // sem_destroy(&connectionSemaphore);
 
     pthread_mutex_unlock(&s_connectionSemaphoreLock);
     if (!connectWorked)
     {
         // failure
-       LOGE2((ZT("HttpClient::Connect - connection failed")));
+       fprintf(stderr, "HttpClient::Connect - connection failed\n");
         return httpclient::FAILED;
     }
 
-    LOGD2((ZT("HttpClient::Connect - OK")));
+    fprintf(stderr, "HttpClient::Connect - OK\n");
     return httpclient::OKAY;
 }
 
@@ -733,14 +738,16 @@ Result HttpClient::StartRequest(
 
     std::string EncodedUri(EscapeUriString(uri, true));
 
-    LOGD2((ZT("HttpClient::StartRequest - verb: %s, URI: %s"), verb, uri));
+    fprintf(stderr, "HttpClient::StartRequest - verb: %s, URI: %s\n", verb, uri);
     NotifyItem* item = new NotifyItem(_rep, verb, EncodedUri.empty() ? "" : EncodedUri.c_str(), extraHeaders, data);
+
+    fprintf(stderr, "StartRequest NotifyItem\n");
     _rep->_notify = false;
     s_notifySet = false;
 
     if (!_rep->_th->PostItem(item))
     {
-        LOGE2((ZT("HttpClient::StartRequest - PostItem failed")));
+        fprintf(stderr, "HttpClient::StartRequest - PostItem failed\n");
         pthread_mutex_unlock(&s_sendLock);
         delete item;
         return httpclient::FAILED;
@@ -764,22 +771,22 @@ Result HttpClient::StartRequest(
         time_t current_time = time(NULL);
         int r;
 
-        LOGD2((ZT("HttpClient::StartRequest - Waiting for send semaphore")));
+        fprintf(stderr, "HttpClient::StartRequest - Waiting for send semaphore\n");
         timeout_time.tv_sec = current_time + 31;   // 30 - 31 seconds, since we don't compute tv_nsec.
         timeout_time.tv_nsec = 0;
         if ((r = sem_timedwait(&s_sendSemaphore, &timeout_time)) < 0)
         {                               // in most cases, errno here will be ETIMEDOUT
-            LOGE2((ZT("HttpClient::StartRequest - status: %d, errno: %d (%s)"), r, errno, strerror(errno)));
+            fprintf(stderr, "HttpClient::StartRequest - status: %d, errno: %d (%s)\n", r, errno, strerror(errno));
         }
         else
         {
-            LOGD2((ZT("HttpClient::StartRequest - sem_timedwait returned status: %d"), r));
+            fprintf(stderr, "HttpClient::StartRequest - sem_timedwait returned status: %d\n", r);
         }
 #endif
 
         if (!_rep->_notify)
         {
-            LOGE2((ZT("HttpClient::StartRequest - Timed out. rep: %p"), _rep));
+            fprintf(stderr, "HttpClient::StartRequest - Timed out. rep: %p\n", _rep);
             res = httpclient::TIMEOUT;
         }
         else
@@ -801,9 +808,11 @@ void HttpClient::SetOperationTimeout(
 
     NotifyItem* item = new NotifyItem(_rep, timeoutMS * 1000);
 
+    fprintf(stderr, "SetOperationTimeout NotifyItem\n");
+
     if (!_rep->_th->PostItem(item))
     {
-        LOGE2((ZT("HttpClient::SetOperationTimeout - PostItem failed")));
+        fprintf(stderr, "HttpClient::SetOperationTimeout - PostItem failed\n");
         delete item;
     }
 }
@@ -815,10 +824,10 @@ static MI_Uint32 _proc(
 {
     httpclient::IOThread* pThis = (httpclient::IOThread*)self;
     // keep runnning until terminated
-    LOGD2((ZT("_proc - Begin. Running selector thread")));
+    fprintf(stderr, "_proc - Begin. Running selector thread\n");
     Selector_Run(&pThis->_selector, TIME_NEVER, MI_FALSE);
 
-    LOGD2((ZT("_proc - OK exit")));
+    fprintf(stderr, "_proc - OK exit\n");
     return 0;
 }
 
@@ -828,7 +837,7 @@ static void threadDelegation(
 {
     httpclient::IOThread* pThis = (httpclient::IOThread*)self;
     httpclient::NotifyItem* item = (httpclient::NotifyItem*)Uint64ToPtr(message->argPtr);
-    LOGD2((ZT("threadDelegation - item: %p, Argument: %lX"), item, (unsigned long)item->_msg->argPtr));
+    fprintf(stderr, "threadDelegation - item: %p, Argument: %lX\n", item, (unsigned long)item->_msg->argPtr);
 
     if (item != NULL)
     {
@@ -868,7 +877,7 @@ static void httpClientCallbackOnStatus(
     httpclient::HttpClientRep* rep = (httpclient::HttpClientRep*)callbackData;
     httpclient::Result user_res = httpclient::FAILED;
 
-    LOGD2((ZT("httpClientCallbackOnStatus - Begin. MI result: %d (%s)"), (int)result, mistrerror(result)));
+    fprintf(stderr, "httpClientCallbackOnStatus - Begin. MI result: %d (%s)\n", (int)result, mistrerror(result));
     if (result == MI_RESULT_OK)
         user_res = httpclient::OKAY;
     else if (result == MI_RESULT_TIME_OUT)
@@ -880,12 +889,12 @@ static void httpClientCallbackOnStatus(
 
     if (rep != NULL && rep->_callback != NULL)
     {
-        LOGD2((ZT("httpClientCallbackOnStatus - Calling caller's callback. HTTP client status: %d (%s)"), user_res, clientstatusstr(user_res)));
+        fprintf(stderr, "httpClientCallbackOnStatus - Calling caller's callback. HTTP client status: %d (%s)\n", user_res, clientstatusstr(user_res));
         rep->_callback->OnStatus(user_res);
     }
 
     rep->_lastStatus = user_res;
-    LOGD2((ZT("httpClientCallbackOnstatus - Notify was set. rep: %p"), rep));
+    fprintf(stderr, "httpClientCallbackOnstatus - Notify was set. rep: %p\n", rep);
     s_notifySet = true;
     rep->_notify = true;
     sem_post(&s_sendSemaphore);
@@ -901,7 +910,7 @@ static MI_Boolean httpClientCallbackOnResponse(
 {
     httpclient::HttpClientRep* rep = (httpclient::HttpClientRep*)callbackData;
 
-    LOGD2((ZT("httpClientCallbackOnResponse - content size (-1 means use chunk size): %ld, lastChunk: %d"), (long)contentSize, (int)lastChunk));
+    fprintf(stderr, "httpClientCallbackOnResponse - content size (-1 means use chunk size): %ld, lastChunk: %d\n", (long)contentSize, (int)lastChunk);
 
     if (headers != NULL)
     {
@@ -909,18 +918,18 @@ static MI_Boolean httpClientCallbackOnResponse(
 
         for (MI_Uint32 i = 0; i < headers->sizeHeaders; i++)
         {
-            LOGD2((ZT("httpClientCallbackOnResponse - H: %s --> %s"), headers->headers[i].name, headers->headers[i].value));
+            fprintf(stderr, "httpClientCallbackOnResponse - H: %s --> %s\n", headers->headers[i].name, headers->headers[i].value);
             user_headers[headers->headers[i].name] = headers->headers[i].value;
         }
 
         if (headers->httpError < 100 || headers->httpError > 999)
         {
-            LOGE2((ZT("httpClientCallbackOnResponse - HTTP status < 100 or > 999 in callback: %d"), headers->httpError));
+            fprintf(stderr, "httpClientCallbackOnResponse - HTTP status < 100 or > 999 in callback: %d\n", headers->httpError);
         }
-        LOGD2((ZT("httpClientCallbackOnResponse - Returning %ld bytes data. HTTP status: %d"), (long)contentSize, headers->httpError));
+        fprintf(stderr, "httpClientCallbackOnResponse - Returning %ld bytes data. HTTP status: %d\n", (long)contentSize, headers->httpError);
         if (!rep->_callback->OnResponseHeader(headers->httpError, user_headers, (int)contentSize))
         {
-            LOGE2((ZT("httpClientCallbackOnResponse - Error returning header")));
+            fprintf(stderr, "httpClientCallbackOnResponse - Error returning header\n");
 
             return MI_FALSE;
         }
@@ -933,12 +942,12 @@ static MI_Boolean httpClientCallbackOnResponse(
 
         if (!rep->_callback->OnResponseData(user_data, lastChunk))
         {
-            LOGE2((ZT("httpClientCallbackOnResponse - Error from OnResponseData")));
+            fprintf(stderr, "httpClientCallbackOnResponse - Error from OnResponseData\n");
             return MI_FALSE;
         }
-        LOGD2((ZT("httpClientCallbackOnResponse - Returning %u bytes data"), (unsigned int)(*data)->u.s.size));
+        fprintf(stderr, "httpClientCallbackOnResponse - Returning %u bytes data\n", (unsigned int)(*data)->u.s.size);
     }
 
-    LOGD2((ZT("httpClientCallbackOnStatusResponse - Returning OK (MI_TRUE)")));
+    fprintf(stderr, "httpClientCallbackOnStatusResponse - Returning OK (MI_TRUE)\n");
     return MI_TRUE;
 }

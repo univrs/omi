@@ -36,7 +36,7 @@ typedef struct _HttpClient HttpClient;
 */
 typedef struct _HttpClientRequestHeaders
 {
-    const char* const* data;
+    const char* * data;
     MI_Uint32 size;
 }
 HttpClientRequestHeaders;

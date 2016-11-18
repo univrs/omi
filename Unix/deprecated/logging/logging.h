@@ -48,7 +48,7 @@
         ptr = malloc(8);\
         free(ptr);\
         Time_Now(&currentTimeUsec);\
-        printf("%s %s %u:%lu %s:%d ", FmtTime(currentTimeUsec), typ, (unsigned int)getpid(), get_tid(), __FILE__, __LINE__);\
+        printf("%s %s %u:%lu %s:%d ", FmtTime(currentTimeUsec), typ, (unsigned int)getpid(), get_tid(), __FILE__, __LINE__); \
 }
 
 #undef printf

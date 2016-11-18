@@ -503,13 +503,17 @@ void __Log_Put2(
     va_list ap;
     memset(&ap, 0, sizeof(ap));
 
+    va_start(ap, format);
+
+    fprintf(stderr, format, ap);
+    fprintf(stderr, "\n");
+
     if (!g_logstate.f)
         return;
 
 #ifdef LOGC_USES_LOCK
     Lock_Acquire(&_logLock);
 #endif
-    va_start(ap, format);
 
     Vftprintf(g_logstate.f, format, ap);
 
