@@ -73,5 +73,5 @@ if ! is_installed gss-ntlmssp; then
         sudo mv /etc/gss/mech.d/mech.ntlmssp /etc/gss/mech.d/mech.ntlmssp.conf
     fi
     # Fix prefix
-    # sudo sed -i 's/${prefix}/\/usr/g' /etc/gss/mech.d/mech.ntlmssp.conf
+    sudo sed -i 's/${prefix}/\/usr/g' /etc/gss/mech.d/mech.ntlmssp.conf
 fi
